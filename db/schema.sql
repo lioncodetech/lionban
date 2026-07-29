@@ -83,3 +83,9 @@ CREATE TABLE lb_artifacts (
   content bytea,
   created_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE TABLE lb_worker_heartbeats (
+  worker_id text PRIMARY KEY,
+  last_seen timestamptz NOT NULL DEFAULT now(),
+  codex_authenticated boolean NOT NULL DEFAULT false,
+  status_message text
+);

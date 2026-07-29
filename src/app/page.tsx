@@ -8,11 +8,13 @@ type App = { id: string; name: string; repo: string; language: string; branch: s
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
+type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
 const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analisando", fixing:"Corrigindo", testing:"Testando", approval:"Aguardando aprovação", completed:"Concluído", failed:"Falhou", cancelled:"Falhou" };
 const priorityFromApi: Record<string, Ticket["priority"]> = { low:"Baixa", medium:"Média", high:"Alta", critical:"Crítica" };
 const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:"medium", Alta:"high", Crítica:"critical" };
+const statusToApi: Record<Status, string> = { Aberto:"open", Analisando:"analyzing", Corrigindo:"fixing", Testando:"testing", "Aguardando aprovação":"approval", Concluído:"completed", Falhou:"failed" };
 
 export default function Home() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -34,6 +36,8 @@ export default function Home() {
   const [importing, setImporting] = useState<number | null>(null);
   const [importError, setImportError] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [draggedTicket, setDraggedTicket] = useState<number | null>(null);
+  const [agentHealth, setAgentHealth] = useState<AgentHealth>({ workerOnline:false, codexAuthenticated:false, lastSeen:null, message:"Verificando o executor…" });
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087" };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
@@ -59,6 +63,38 @@ export default function Home() {
     }
     loadData();
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    async function loadHealth() {
+      try {
+        const response = await fetch("/api/health", { cache:"no-store" });
+        if (!response.ok) throw new Error();
+        const health = await response.json();
+        if (active) setAgentHealth(health);
+      } catch {
+        if (active) setAgentHealth({ workerOnline:false, codexAuthenticated:false, lastSeen:null, message:"Não foi possível consultar o executor." });
+      }
+    }
+    loadHealth();
+    const timer = window.setInterval(loadHealth, 15000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, []);
+
+  async function moveTicket(ticketId: number, status: Status) {
+    const previous = tickets.find(ticket => ticket.id === ticketId);
+    if (!previous || previous.status === status) return;
+    setTickets(current => current.map(ticket => ticket.id === ticketId ? { ...ticket, status } : ticket));
+    if (detail?.id === ticketId) setDetail({ ...detail, status });
+    const response = await fetch(`/api/tickets/${ticketId}`, {
+      method:"PATCH", headers:{"content-type":"application/json"}, body:JSON.stringify({ status:statusToApi[status] }),
+    });
+    if (!response.ok) {
+      setTickets(current => current.map(ticket => ticket.id === ticketId ? previous : ticket));
+      if (detail?.id === ticketId) setDetail(previous);
+      setDataError("Não foi possível mover o chamado. A alteração foi desfeita.");
+    }
+  }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -136,7 +172,7 @@ export default function Home() {
         <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ <span>Quadro</span></button>
         <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{applicationList.length}</b></button>
       </nav>
-      <div className="agent"><strong><i /> Codex conectado</strong><p>Executor pronto para receber novos chamados.</p><hr /><small>37% do limite usado</small></div>
+      <div className={`agent ${agentHealth.workerOnline && agentHealth.codexAuthenticated ? "online" : "offline"}`}><strong><i /> {agentHealth.workerOnline ? (agentHealth.codexAuthenticated ? "Codex conectado" : "Codex sem autenticação") : "Worker desconectado"}</strong><p>{agentHealth.message}</p>{agentHealth.lastSeen && <small>Último sinal: {new Date(agentHealth.lastSeen).toLocaleTimeString("pt-BR")}</small>}</div>
       <div className="user"><i>ES</i><div><strong>Elder</strong><span>Administrador</span></div><b>•••</b></div>
     </aside>
 
@@ -151,12 +187,12 @@ export default function Home() {
           <div><span>Em andamento</span><strong>{tickets.filter(t => ["Analisando","Corrigindo","Testando"].includes(t.status)).length}</strong><small>execuções ativas</small></div>
           <div><span>Aguardando você</span><strong>{tickets.filter(t => t.status === "Aguardando aprovação").length}</strong><small>aprovações pendentes</small></div>
           <div><span>Concluídos</span><strong>{tickets.filter(t => t.status === "Concluído").length}</strong><small>no histórico</small></div>
-          <div><span>Executor</span><strong className="ok">Operacional</strong><small>● fila saudável</small></div>
+          <div><span>Executor</span><strong className={agentHealth.workerOnline && agentHealth.codexAuthenticated ? "ok" : "warning"}>{agentHealth.workerOnline ? (agentHealth.codexAuthenticated ? "Operacional" : "Sem login") : "Offline"}</strong><small>{agentHealth.message}</small></div>
         </div>
         {dataError && <div className="import-error">{dataError}</div>}
-        {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className="column" key={status}>
+        {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className={`column ${draggedTicket !== null ? "drop-enabled" : ""}`} key={status} onDragOver={event => event.preventDefault()} onDrop={() => { if (draggedTicket !== null) moveTicket(draggedTicket, status); setDraggedTicket(null); }}>
           <header><i className={`status s${statuses.indexOf(status)}`} /><strong>{status}</strong><b>{visible.filter(t => t.status === status).length}</b></header>
-          {visible.filter(t => t.status === status).map(t => <button className="ticket" key={t.id} onClick={() => setDetail(t)}>
+          {visible.filter(t => t.status === status).map(t => <button className={`ticket ${draggedTicket === t.id ? "dragging" : ""}`} draggable key={t.id} onDragStart={event => { event.dataTransfer.effectAllowed = "move"; setDraggedTicket(t.id); }} onDragEnd={() => setDraggedTicket(null)} onClick={() => setDetail(t)}>
             <div className="ticket-top"><span className={`p-${t.priority}`}>{t.priority}</span><small>#{t.id}</small></div>
             <h3>{t.title}</h3><p>{t.description}</p>
             <div className="repo"><i style={{ background: app(t.appId).color }}>{app(t.appId).name[0]}</i><div><strong>{app(t.appId).name}</strong><small>{app(t.appId).repo}</small></div></div>

@@ -24,6 +24,20 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
 async function event(job:Job, kind:string, message:string, metadata={}) {
   await db.query("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5)", [job.ticket_id,job.execution_id,kind,message,metadata]);
 }
+async function heartbeat(codexAuthenticated:boolean, statusMessage:string) {
+  await db.query(`INSERT INTO lb_worker_heartbeats(worker_id,last_seen,codex_authenticated,status_message)
+    VALUES($1,now(),$2,$3)
+    ON CONFLICT(worker_id) DO UPDATE SET last_seen=now(),codex_authenticated=EXCLUDED.codex_authenticated,status_message=EXCLUDED.status_message`,
+    [workerId,codexAuthenticated,statusMessage]);
+}
+async function codexStatus() {
+  try {
+    await run(process.env.CODEX_BIN ?? "codex",["login","status"],tmpdir());
+    return { authenticated:true, message:"Codex autenticado e pronto." };
+  } catch {
+    return { authenticated:false, message:"Execute codex login --device-auth no worker." };
+  }
+}
 async function claim():Promise<Job|null> {
   const client = await db.connect();
   try {
@@ -93,6 +107,10 @@ async function processJob(job:Job) {
 }
 async function main() {
   console.log(`${workerId} iniciado`);
+  const status=await codexStatus();
+  await heartbeat(status.authenticated,status.message);
+  const timer=setInterval(() => heartbeat(status.authenticated,status.message).catch(error => console.error("heartbeat:",error)),10000);
+  timer.unref();
   for (;;) { const job=await claim(); if (job) await processJob(job); else await new Promise(r=>setTimeout(r,3000)); }
 }
 main().catch(error => { console.error(error); process.exit(1); });

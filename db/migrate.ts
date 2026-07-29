@@ -4,6 +4,7 @@ import { db } from "../src/lib/db";
 
 const initialVersion = "001_lb_initial";
 const attachmentsVersion = "002_lb_artifact_content";
+const heartbeatVersion = "003_lb_worker_heartbeat";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -25,6 +26,19 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [attachmentsVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${attachmentsVersion} aplicada`);
+    }
+    const heartbeatApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [heartbeatVersion]);
+    if (!heartbeatApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query(`CREATE TABLE IF NOT EXISTS lb_worker_heartbeats (
+        worker_id text PRIMARY KEY,
+        last_seen timestamptz NOT NULL DEFAULT now(),
+        codex_authenticated boolean NOT NULL DEFAULT false,
+        status_message text
+      )`);
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [heartbeatVersion]);
+      await client.query("COMMIT");
+      console.log(`Migração ${heartbeatVersion} aplicada`);
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
