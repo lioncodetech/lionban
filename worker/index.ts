@@ -21,7 +21,7 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
     child.on("close", code => code === 0 ? resolve(output) : reject(new Error(`${command} falhou (${code}): ${output.slice(-4000)}`)));
   });
 }
-function runControlled(command:string,args:string[],cwd:string,job:Job) {
+function runControlled(command:string,args:string[],cwd:string,job:Job,progressEventId:number) {
   const timeoutMs=Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000));
   return new Promise<string>((resolve,reject) => {
     const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
@@ -40,9 +40,17 @@ function runControlled(command:string,args:string[],cwd:string,job:Job) {
         if (result.rows[0]?.cancellation_requested) stop("EXECUTION_CANCELLED");
       } catch(error) { console.error("cancel-check:",error); }
     },2000);
-    child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); reject(error); });
+    const startedAt=Date.now();
+    const progress=setInterval(async () => {
+      const elapsedSeconds=Math.floor((Date.now()-startedAt)/1000);
+      try {
+        await db.query("UPDATE lb_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
+          [`Codex trabalhando há ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,lastSignal:new Date().toISOString()}),progressEventId]);
+      } catch(error) { console.error("progress-update:",error); }
+    },5000);
+    child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); clearInterval(progress); reject(error); });
     child.on("close",code => {
-      clearTimeout(timeout); clearInterval(cancellation);
+      clearTimeout(timeout); clearInterval(cancellation); clearInterval(progress);
       if (failureReason) reject(new Error(failureReason));
       else if (code===0) resolve(output);
       else reject(new Error(`${command} falhou (${code}): ${output.slice(-4000)}`));
@@ -50,7 +58,8 @@ function runControlled(command:string,args:string[],cwd:string,job:Job) {
   });
 }
 async function event(job:Job, kind:string, message:string, metadata={}) {
-  await db.query("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5)", [job.ticket_id,job.execution_id,kind,message,metadata]);
+  const result=await db.query<{id:number}>("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5) RETURNING id", [job.ticket_id,job.execution_id,kind,message,metadata]);
+  return result.rows[0].id;
 }
 async function savePatch(job:Job, repo:string, committed=false) {
   const patch=committed ? await git(["format-patch","-1","--stdout"],repo) : await git(["diff","--binary","HEAD"],repo);
@@ -148,8 +157,8 @@ async function processJob(job:Job) {
     }
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
-    await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000)});
-    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo,job);
+    const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString()});
+    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {

@@ -19,6 +19,14 @@ const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analis
 const priorityFromApi: Record<string, Ticket["priority"]> = { low:"Baixa", medium:"Média", high:"Alta", critical:"Crítica" };
 const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:"medium", Alta:"high", Crítica:"critical" };
 const statusToApi: Record<Status, string> = { Aberto:"open", Analisando:"analyzing", Corrigindo:"fixing", Testando:"testing", "Aguardando aprovação":"approval", Concluído:"completed", Falhou:"failed" };
+const eventLabels:Record<string,string> = {
+  "ticket.created":"Chamado criado", "ticket.moved":"Chamado movimentado", "repository.cloned":"Repositório preparado",
+  "repository.validated":"Repositório validado", "codex.started":"Codex trabalhando",
+  "execution.recovered":"Execução recuperada", "execution.retried":"Nova tentativa iniciada", "execution.failed":"Execução falhou",
+  "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",
+  "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
+  "tag.created":"Versão criada", "deploy.triggered":"Deploy solicitado", "patch.prepared":"Correção preparada",
+};
 
 export default function Home() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -80,6 +88,19 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!detail) return;
+    const ticketId=detail.id;
+    const timer=window.setInterval(async ()=>{
+      const response=await fetch(`/api/tickets/${ticketId}`,{cache:"no-store"});
+      if (response.ok) {
+        const result=await response.json();
+        setTicketDetails({events:result.events ?? [],executions:result.executions ?? []});
+      }
+    },5000);
+    return ()=>window.clearInterval(timer);
+  }, [detail]);
+
+  useEffect(() => {
     let active = true;
     async function loadHealth() {
       try {
@@ -111,13 +132,16 @@ export default function Home() {
     }
   }
 
-  async function openTicket(ticket:Ticket) {
-    setDetail(ticket); setTicketDetails(null); setShowLogs(false);
-    const response=await fetch(`/api/tickets/${ticket.id}`,{cache:"no-store"});
+  async function loadTicketDetails(ticketId:number) {
+    const response=await fetch(`/api/tickets/${ticketId}`,{cache:"no-store"});
     if (response.ok) {
       const result=await response.json();
       setTicketDetails({events:result.events ?? [],executions:result.executions ?? []});
     }
+  }
+  async function openTicket(ticket:Ticket) {
+    setDetail(ticket); setTicketDetails(null); setShowLogs(false);
+    await loadTicketDetails(ticket.id);
   }
 
   async function cancelExecution() {
@@ -310,13 +334,13 @@ export default function Home() {
       <footer><button className="secondary" onClick={() => setImportModal(false)}>Cancelar</button></footer>
     </section></div>}
 
-    {detail && <div className="overlay side" onMouseDown={() => setDetail(null)}><aside className="detail wide" onMouseDown={e => e.stopPropagation()}>
+    {detail && <div className="overlay ticket-overlay" onMouseDown={() => setDetail(null)}><aside className="detail wide" onMouseDown={e => e.stopPropagation()}>
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
       {!ticketDetails && <div className="detail-loading">Carregando atividade…</div>}
-      {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{event.message}</strong><small>{new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
-      {showLogs && ticketDetails && <section className="full-logs"><h4>LOGS COMPLETOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?new Date(execution.started_at).toLocaleString("pt-BR"):"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<pre>{JSON.stringify(event.metadata,null,2)}</pre>}</article>)}</section>}
+      {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
+      {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
       <footer><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou"].includes(detail.status)}>Cancelar execução</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></footer>
     </aside></div>}
   </main>;
