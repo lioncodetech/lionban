@@ -22,6 +22,7 @@ CREATE TABLE lb_applications (
   test_command text,
   lint_command text,
   build_command text,
+  deploy_webhook_url text,
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -36,6 +37,10 @@ CREATE TABLE lb_tickets (
   base_commit text,
   result_summary text,
   cancellation_requested boolean NOT NULL DEFAULT false,
+  auto_commit boolean NOT NULL DEFAULT true,
+  auto_push boolean NOT NULL DEFAULT true,
+  auto_pull_request boolean NOT NULL DEFAULT false,
+  auto_deploy boolean NOT NULL DEFAULT false,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

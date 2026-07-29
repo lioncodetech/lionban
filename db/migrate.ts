@@ -5,6 +5,7 @@ import { db } from "../src/lib/db";
 const initialVersion = "001_lb_initial";
 const attachmentsVersion = "002_lb_artifact_content";
 const heartbeatVersion = "003_lb_worker_heartbeat";
+const automationOptionsVersion = "004_lb_automation_options";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -39,6 +40,18 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [heartbeatVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${heartbeatVersion} aplicada`);
+    }
+    const automationOptionsApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [automationOptionsVersion]);
+    if (!automationOptionsApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lb_applications ADD COLUMN IF NOT EXISTS deploy_webhook_url text");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS auto_commit boolean NOT NULL DEFAULT true");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS auto_push boolean NOT NULL DEFAULT true");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS auto_pull_request boolean NOT NULL DEFAULT false");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS auto_deploy boolean NOT NULL DEFAULT false");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [automationOptionsVersion]);
+      await client.query("COMMIT");
+      console.log(`Migração ${automationOptionsVersion} aplicada`);
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

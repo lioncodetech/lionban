@@ -4,7 +4,7 @@ import { ClipboardEvent, DragEvent, FormEvent, useEffect, useRef, useState } fro
 import Image from "next/image";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
-type App = { id: string; name: string; repo: string; language: string; branch: string; color: string };
+type App = { id: string; name: string; repo: string; language: string; branch: string; color: string; deployConfigured: boolean };
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
@@ -38,8 +38,14 @@ export default function Home() {
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [draggedTicket, setDraggedTicket] = useState<number | null>(null);
   const [agentHealth, setAgentHealth] = useState<AgentHealth>({ workerOnline:false, codexAuthenticated:false, lastSeen:null, message:"Verificando o executor…" });
+  const [autoCommit, setAutoCommit] = useState(true);
+  const [autoPush, setAutoPush] = useState(true);
+  const [autoPullRequest, setAutoPullRequest] = useState(false);
+  const [autoDeploy, setAutoDeploy] = useState(false);
+  const [configApp, setConfigApp] = useState<App | null>(null);
+  const [deployWebhookUrl, setDeployWebhookUrl] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
-  const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087" };
+  const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087", deployConfigured:false };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
   useEffect(() => {
@@ -50,7 +56,7 @@ export default function Home() {
         const [appRows, ticketRows] = await Promise.all([appsResponse.json(), ticketsResponse.json()]);
         setApplicationList(appRows.map((row: Record<string, unknown>) => ({
           id:String(row.id), name:String(row.name), repo:String(row.full_name),
-          language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50",
+          language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
         })));
         setTickets(ticketRows.map((row: Record<string, unknown>) => ({
           id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
@@ -107,13 +113,14 @@ export default function Home() {
     }));
     const response = await fetch("/api/tickets", {
       method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments }),
+      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments, autoCommit, autoPush, autoPullRequest, autoDeploy }),
     });
     if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
     const created = await response.json();
     setTickets(v => [{ id:Number(created.id), appId:String(created.application_id), title:String(created.title), description:String(created.description), priority, status:"Aberto", age:"agora" }, ...v]);
     attachments.forEach(item => URL.revokeObjectURL(item.preview));
     setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]);
+    setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
   }
 
   function addImages(files: File[]) {
@@ -159,10 +166,22 @@ export default function Home() {
     }
     const imported: App = {
       id: result.id, name: result.name, repo: result.full_name,
-      language: result.language ?? "Não detectada", branch: result.default_branch, color: "#236b50",
+      language: result.language ?? "Não detectada", branch: result.default_branch, color: "#236b50", deployConfigured:Boolean(result.deploy_configured),
     };
     setApplicationList(current => [...current.filter(item => item.repo !== imported.repo), imported]);
     setImporting(null); setImportModal(false); setView("apps");
+  }
+
+  async function saveApplicationConfig(e:FormEvent) {
+    e.preventDefault();
+    if (!configApp) return;
+    const response=await fetch(`/api/applications/${configApp.id}`,{
+      method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({deployWebhookUrl:deployWebhookUrl.trim()}),
+    });
+    if (!response.ok) { setDataError("Não foi possível salvar o webhook de deploy."); return; }
+    const result=await response.json();
+    setApplicationList(current => current.map(item => item.id === configApp.id ? {...item,deployConfigured:Boolean(result.deploy_configured)} : item));
+    setConfigApp(null); setDeployWebhookUrl("");
   }
 
   return <main className="shell">
@@ -204,7 +223,7 @@ export default function Home() {
         <div className="app-icon" style={{ background: a.color }}>{a.name[0]}</div><span className="authorized">● AUTORIZADO</span>
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
         <dl><div><dt>Linguagem</dt><dd>{a.language}</dd></div><div><dt>Branch principal</dt><dd>{a.branch}</dd></div></dl>
-        <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button>Configurar →</button></footer>
+        <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button onClick={() => { setConfigApp(a); setDeployWebhookUrl(""); }}>Configurar →</button></footer>
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
     </section>
 
@@ -217,8 +236,21 @@ export default function Home() {
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
       <div className="row"><label>Prioridade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
+      <fieldset className="automation-options"><legend>Automação após corrigir e testar</legend>
+        <label><input type="checkbox" checked={autoCommit} onChange={e => { setAutoCommit(e.target.checked); if (!e.target.checked) { setAutoPush(false); setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Commit automático</strong><small>Criar um commit com a correção</small></span></label>
+        <label><input type="checkbox" checked={autoPush} onChange={e => { setAutoPush(e.target.checked); if (e.target.checked) setAutoCommit(true); else { setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Push automático</strong><small>Enviar a branch lionban/chamado-ID</small></span></label>
+        <label><input type="checkbox" checked={autoPullRequest} onChange={e => { setAutoPullRequest(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); setAutoDeploy(false); } }} /><span><strong>Pull Request automático</strong><small>Criar PR em vez de integrar diretamente</small></span></label>
+        <label className={!appId || !app(appId).deployConfigured || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={autoDeploy} disabled={!appId || !app(appId).deployConfigured || autoPullRequest} onChange={e => { setAutoDeploy(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Deploy automático</strong><small>{appId && app(appId).deployConfigured ? (autoPullRequest ? "Disponível somente sem Pull Request" : "Disparar webhook do EasyPanel após integrar") : "Configure o webhook na aplicação"}</small></span></label>
+      </fieldset>
       {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
       <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description}>Criar e enviar ao Codex →</button></footer>
+    </form></div>}
+
+    {configApp && <div className="overlay" onMouseDown={() => setConfigApp(null)}><form className="modal config-modal" onSubmit={saveApplicationConfig} onMouseDown={e => e.stopPropagation()}>
+      <header><div><p>CONFIGURAR APLICAÇÃO</p><h2>{configApp.name}</h2></div><button type="button" onClick={() => setConfigApp(null)}>×</button></header>
+      <p className="config-help">Cole o webhook de deploy criado no serviço correspondente do EasyPanel. O endereço fica armazenado no banco e não é exibido novamente.</p>
+      <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
+      <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Cancelar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setDeployWebhookUrl("")}>Remover webhook</button>}<button className="primary">Salvar</button></footer>
     </form></div>}
 
     {importModal && <div className="overlay" onMouseDown={() => setImportModal(false)}><section className="modal import-modal" onMouseDown={e => e.stopPropagation()}>

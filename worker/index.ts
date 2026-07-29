@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 function git(args:string[], cwd:string) {
@@ -23,6 +23,28 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
 }
 async function event(job:Job, kind:string, message:string, metadata={}) {
   await db.query("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5)", [job.ticket_id,job.execution_id,kind,message,metadata]);
+}
+async function savePatch(job:Job, repo:string, committed=false) {
+  const patch=committed ? await git(["format-patch","-1","--stdout"],repo) : await git(["diff","--binary","HEAD"],repo);
+  if (!patch.trim()) return;
+  await db.query(`INSERT INTO lb_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
+    VALUES($1,'patch',$2,$3,'text/x-diff',$4,$5)`,
+    [job.ticket_id,`chamado-${job.ticket_id}.patch`,`db://${job.ticket_id}/chamado-${job.ticket_id}.patch`,Buffer.byteLength(patch),Buffer.from(patch)]);
+}
+async function createPullRequest(job:Job, branch:string) {
+  const response=await fetch(`https://api.github.com/repos/${job.full_name}/pulls`,{
+    method:"POST",
+    headers:{Accept:"application/vnd.github+json",Authorization:`Bearer ${process.env.GITHUB_TOKEN}`,"X-GitHub-Api-Version":"2022-11-28","content-type":"application/json"},
+    body:JSON.stringify({title:`fix: ${job.title}`,head:branch,base:job.default_branch,body:`Correção automática preparada pelo LionBan para o chamado #${job.ticket_id}.`}),
+  });
+  if (!response.ok) throw new Error(`GITHUB_PR_FAILED_${response.status}: ${(await response.text()).slice(0,1000)}`);
+  return response.json() as Promise<{number:number; html_url:string}>;
+}
+async function triggerDeploy(job:Job) {
+  if (!job.deploy_webhook_url) throw new Error("DEPLOY_WEBHOOK_NOT_CONFIGURED");
+  const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
+  if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
+  await event(job,"deploy.triggered","Deploy automático solicitado ao EasyPanel");
 }
 async function heartbeat(codexAuthenticated:boolean, statusMessage:string) {
   await db.query(`INSERT INTO lb_worker_heartbeats(worker_id,last_seen,codex_authenticated,status_message)
@@ -43,7 +65,8 @@ async function claim():Promise<Job|null> {
   try {
     await client.query("BEGIN");
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,
-      a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command
+      a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
+      t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url
       FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true ORDER BY t.created_at FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
@@ -90,11 +113,31 @@ async function processJob(job:Job) {
       await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
     }
     await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
+    if (!job.auto_commit) {
+      await savePatch(job,repo);
+      await event(job,"patch.prepared","Correção preparada sem commit automático");
+      await db.query("UPDATE lb_tickets SET status='approval' WHERE id=$1",[job.ticket_id]);
+      await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
+    }
     await git(["add","-A"],repo); await git(["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
+    await event(job,"commit.created","Commit automático criado");
+    if (!job.auto_push) {
+      await savePatch(job,repo,true);
+      await db.query("UPDATE lb_tickets SET status='approval' WHERE id=$1",[job.ticket_id]);
+      await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
+    }
     await git(["push","origin",branch],repo);
+    await event(job,"branch.pushed","Branch enviada automaticamente ao GitHub",{branch});
+    if (job.auto_pull_request) {
+      const pullRequest=await createPullRequest(job,branch);
+      await event(job,"pull_request.created",`Pull Request #${pullRequest.number} criado`,{url:pullRequest.html_url,number:pullRequest.number});
+      await db.query("UPDATE lb_tickets SET status='approval',result_summary=$1 WHERE id=$2",[`Pull Request #${pullRequest.number}: ${pullRequest.html_url}`,job.ticket_id]);
+      await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
+    }
     await git(["checkout",safe(job.default_branch)],repo); await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);
     await git(["merge","--no-ff",branch,"-m",`merge: LionBan chamado #${job.ticket_id}`],repo);
     await git(["push","origin",safe(job.default_branch)],repo);
+    if (job.auto_deploy) await triggerDeploy(job);
     await db.query("UPDATE lb_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
     await db.query("UPDATE lb_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
     await event(job,"merge.completed","Correção validada e integrada à branch principal");
