@@ -154,6 +154,30 @@ export default function Home() {
     await openTicket({...detail,status:"Falhou"});
   }
 
+  async function cloneTicket() {
+    if (!detail) return;
+    const response=await fetch(`/api/tickets/${detail.id}`,{
+      method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({clone:true}),
+    });
+    const result=await response.json().catch(()=>({}));
+    if (!response.ok) { setDataError(result.error??"Não foi possível duplicar o chamado."); return; }
+    const cloned:Ticket={
+      id:Number(result.id),appId:String(result.application_id),title:String(result.title),description:String(result.description),
+      priority:priorityFromApi[String(result.priority)]??"Média",status:"Aberto",age:"agora",
+    };
+    setTickets(current=>[cloned,...current]);
+    setDetail(null); setDataError("");
+  }
+
+  async function deleteTicket() {
+    if (!detail || !window.confirm(`Excluir definitivamente o chamado #${detail.id} e todos os seus logs?`)) return;
+    const response=await fetch(`/api/tickets/${detail.id}`,{method:"DELETE"});
+    const result=await response.json().catch(()=>({}));
+    if (!response.ok) { setDataError(result.error??"Não foi possível excluir o chamado."); return; }
+    setTickets(current=>current.filter(ticket=>ticket.id!==detail.id));
+    setDetail(null); setDataError("");
+  }
+
   function suggestNextTag(tags:RepoTag[]) {
     const versions=tags.map(tag => ({tag:tag.name,match:tag.name.match(/^v?(\d+)\.(\d+)\.(\d+)$/)})).filter(item => item.match)
       .sort((a,b) => Number(b.match![1])-Number(a.match![1]) || Number(b.match![2])-Number(a.match![2]) || Number(b.match![3])-Number(a.match![3]));
@@ -348,7 +372,7 @@ export default function Home() {
       {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
       {codexProgressEvent && <section className="codex-conversation"><div className="conversation-title"><h4>ATIVIDADE PÚBLICA DO CODEX</h4><span>Atualização automática</span></div>{codexTranscript.length>0?codexTranscript.map((item,index)=><article className={item.type} key={`${item.at}-${index}`}><small>{new Date(item.at).toLocaleTimeString("pt-BR")}</small><p>{item.text}</p></article>):<p className="conversation-empty">O Codex ainda não emitiu uma atualização detalhada.</p>}{codexPrompt&&<details><summary>Ver prompt enviado ao Codex</summary><pre>{codexPrompt}</pre></details>}<small className="conversation-note">Mostra mensagens e ações públicas. O raciocínio interno privado do modelo não é disponibilizado.</small></section>}
       {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
-      <footer><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou"].includes(detail.status)}>Cancelar execução</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></footer>
+      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar sem logs</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
     </aside></div>}
   </main>;
 }
