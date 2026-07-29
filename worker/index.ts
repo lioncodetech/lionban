@@ -25,8 +25,28 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   const timeoutMs=Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000));
   return new Promise<string>((resolve,reject) => {
     const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
-    let output=""; let stopping=false;
-    child.stdout.on("data",d => output+=d); child.stderr.on("data",d => output+=d);
+    let output=""; let stopping=false; let stdoutBuffer=""; let latestActivity="Analisando o chamado";
+    const activityFromEvent=(value:unknown) => {
+      if (!value || typeof value !== "object") return;
+      const record=value as Record<string,unknown>;
+      const item=(record.item && typeof record.item === "object" ? record.item : {}) as Record<string,unknown>;
+      if (item.type === "agent_message" && typeof item.text === "string") latestActivity=item.text.replace(/\s+/g," ").slice(0,240);
+      else if (item.type === "command_execution") latestActivity="Executando uma verificação no projeto";
+      else if (item.type === "file_change") latestActivity="Aplicando alterações nos arquivos";
+      else if (item.type === "mcp_tool_call") latestActivity="Consultando uma ferramenta";
+      else if (item.type === "todo_list" && Array.isArray(item.items)) {
+        const active=(item.items as Array<Record<string,unknown>>).find(entry=>entry.status==="in_progress");
+        if (active && typeof active.text==="string") latestActivity=active.text.slice(0,240);
+      } else if (record.type === "turn.started") latestActivity="Analisando o chamado";
+    };
+    child.stdout.on("data",d => {
+      const text=String(d); output+=text; stdoutBuffer+=text;
+      const lines=stdoutBuffer.split(/\r?\n/); stdoutBuffer=lines.pop() ?? "";
+      for (const line of lines) {
+        try { activityFromEvent(JSON.parse(line)); } catch { /* ignora linhas não estruturadas */ }
+      }
+    });
+    child.stderr.on("data",d => output+=d);
     const stop=(reason:string) => {
       if (stopping) return; stopping=true; child.kill("SIGTERM");
       setTimeout(()=>child.kill("SIGKILL"),5000).unref();
@@ -45,7 +65,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
       const elapsedSeconds=Math.floor((Date.now()-startedAt)/1000);
       try {
         await db.query("UPDATE lb_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
-          [`Codex trabalhando há ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,lastSignal:new Date().toISOString()}),progressEventId]);
+          [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,lastSignal:new Date().toISOString(),latestActivity}),progressEventId]);
       } catch(error) { console.error("progress-update:",error); }
     },5000);
     child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); clearInterval(progress); reject(error); });
@@ -158,7 +178,7 @@ async function processJob(job:Job) {
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString()});
-    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo,job,progressEventId);
+    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
