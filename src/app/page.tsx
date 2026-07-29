@@ -27,6 +27,7 @@ const eventLabels:Record<string,string> = {
   "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",
   "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
   "tag.created":"Versão criada", "deploy.triggered":"Deploy solicitado", "patch.prepared":"Correção preparada",
+  "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
 };
 
 export default function Home() {

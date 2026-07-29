@@ -187,11 +187,37 @@ async function processJob(job:Job) {
       }
       attachmentNote=`\nHá ${artifactRows.rowCount} captura(s) de tela em .lionban-attachments/. Analise essas imagens como evidência do bug. Não inclua essa pasta no commit.`;
     }
-    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
+    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.
+Título: ${job.title}
+Descrição: ${job.description}${attachmentNote}
+
+Fluxo obrigatório:
+1. Antes de alterar código, localize e leia a documentação e as instruções do projeto: AGENTS.md, README, CONTRIBUTING, CHANGELOG, a pasta docs/ e arquivos equivalentes que existirem.
+2. Siga as convenções, comandos e arquitetura documentados pelo próprio projeto.
+3. Primeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura.
+4. Ao terminar a correção, atualize a documentação afetada para refletir o comportamento novo. Se não existir documentação específica, atualize README, CHANGELOG ou crie uma nota curta em docs/.
+5. Execute os testes relevantes e produza um resumo final, incluindo quais documentos foram consultados e atualizados.
+
+Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
     await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
+    const changedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim());
+    const documentationChanged=changedFiles.some(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
+    if (!documentationChanged) {
+      const documentationPrompt=`A correção do chamado #${job.ticket_id} foi implementada, mas nenhum arquivo de documentação foi atualizado.
+Leia a documentação existente do projeto e documente objetivamente a mudança "${job.title}".
+Prefira atualizar o documento mais relevante. Se não existir, atualize README/CHANGELOG ou crie uma nota curta em docs/.
+Não altere a implementação, não faça commit, push, merge ou deploy.`;
+      const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
+      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",documentationPrompt],repo,job,documentationEventId);
+      const documentedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim()).filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
+      if (!documentedFiles.length) throw new Error("DOCUMENTATION_NOT_UPDATED");
+      await event(job,"documentation.updated","Documentação do projeto atualizada",{files:documentedFiles});
+    } else {
+      await event(job,"documentation.updated","Documentação do projeto atualizada",{files:changedFiles.filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file))});
+    }
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
       const [bin,...args]=command.split(/\s+/); await run(bin,args,repo);
