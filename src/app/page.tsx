@@ -1,28 +1,22 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = { id: string; name: string; repo: string; language: string; branch: string; color: string };
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 
-const apps: App[] = [
-  { id: "atlas", name: "Atlas CRM", repo: "elder/atlas-crm", language: "TypeScript", branch: "main", color: "#765be5" },
-  { id: "nexo", name: "Nexo Finance", repo: "elder/nexo-finance", language: "Python", branch: "main", color: "#18a87f" },
-  { id: "orbit", name: "Orbit API", repo: "elder/orbit-api", language: "Go", branch: "master", color: "#e99542" },
-];
-const seed: Ticket[] = [
-  { id: 42, appId: "atlas", title: "Filtro de clientes perde seleção", description: "Ao voltar da tela de detalhes, o filtro de status é limpo.", priority: "Alta", status: "Analisando", age: "há 4 min" },
-  { id: 41, appId: "nexo", title: "Total do relatório diverge", description: "O fechamento mensal ignora estornos no último dia.", priority: "Crítica", status: "Corrigindo", age: "há 18 min" },
-  { id: 40, appId: "orbit", title: "Timeout ao importar CSV", description: "Arquivos acima de 8 MB encerram a requisição.", priority: "Média", status: "Testando", age: "há 31 min" },
-  { id: 39, appId: "atlas", title: "Corrigir contraste do menu", description: "Texto ilegível no tema escuro.", priority: "Baixa", status: "Concluído", age: "ontem" },
-];
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
+const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analisando", fixing:"Corrigindo", testing:"Testando", approval:"Aguardando aprovação", completed:"Concluído", failed:"Falhou", cancelled:"Falhou" };
+const priorityFromApi: Record<string, Ticket["priority"]> = { low:"Baixa", medium:"Média", high:"Alta", critical:"Crítica" };
+const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:"medium", Alta:"high", Crítica:"critical" };
 
 export default function Home() {
-  const [tickets, setTickets] = useState(seed);
-  const [applicationList, setApplicationList] = useState(apps);
+  const [tickets, setTickets] = useState<Ticket[]>([]);
+  const [applicationList, setApplicationList] = useState<App[]>([]);
+  const [loadingData, setLoadingData] = useState(true);
+  const [dataError, setDataError] = useState("");
   const [view, setView] = useState<"board" | "apps">("board");
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState<Ticket | null>(null);
@@ -37,13 +31,41 @@ export default function Home() {
   const [githubQuery, setGithubQuery] = useState("");
   const [importing, setImporting] = useState<number | null>(null);
   const [importError, setImportError] = useState("");
-  const app = (id: string) => applicationList.find(a => a.id === id)!;
+  const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087" };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
-  function submit(e: FormEvent) {
+  useEffect(() => {
+    async function loadData() {
+      try {
+        const [appsResponse, ticketsResponse] = await Promise.all([fetch("/api/applications"), fetch("/api/tickets")]);
+        if (!appsResponse.ok || !ticketsResponse.ok) throw new Error("Falha ao carregar os dados");
+        const [appRows, ticketRows] = await Promise.all([appsResponse.json(), ticketsResponse.json()]);
+        setApplicationList(appRows.map((row: Record<string, unknown>) => ({
+          id:String(row.id), name:String(row.name), repo:String(row.full_name),
+          language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50",
+        })));
+        setTickets(ticketRows.map((row: Record<string, unknown>) => ({
+          id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
+          priority:priorityFromApi[String(row.priority)] ?? "Média", status:statusFromApi[String(row.status)] ?? "Falhou",
+          age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),
+        })));
+      } catch {
+        setDataError("Não foi possível carregar os dados do PostgreSQL.");
+      } finally { setLoadingData(false); }
+    }
+    loadData();
+  }, []);
+
+  async function submit(e: FormEvent) {
     e.preventDefault();
     if (!appId || !title.trim() || !description.trim()) return;
-    setTickets(v => [{ id: Math.max(...v.map(t => t.id)) + 1, appId, title, description, priority, status: "Aberto", age: "agora" }, ...v]);
+    const response = await fetch("/api/tickets", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority] }),
+    });
+    if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
+    const created = await response.json();
+    setTickets(v => [{ id:Number(created.id), appId:String(created.application_id), title:String(created.title), description:String(created.description), priority, status:"Aberto", age:"agora" }, ...v]);
     setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média");
   }
 
@@ -96,12 +118,13 @@ export default function Home() {
 
       {view === "board" ? <>
         <div className="stats">
-          <div><span>Em andamento</span><strong>3</strong><small>execuções ativas</small></div>
-          <div><span>Aguardando você</span><strong>0</strong><small>aprovações pendentes</small></div>
-          <div><span>Concluídos</span><strong>1</strong><small>nesta semana</small></div>
+          <div><span>Em andamento</span><strong>{tickets.filter(t => ["Analisando","Corrigindo","Testando"].includes(t.status)).length}</strong><small>execuções ativas</small></div>
+          <div><span>Aguardando você</span><strong>{tickets.filter(t => t.status === "Aguardando aprovação").length}</strong><small>aprovações pendentes</small></div>
+          <div><span>Concluídos</span><strong>{tickets.filter(t => t.status === "Concluído").length}</strong><small>no histórico</small></div>
           <div><span>Executor</span><strong className="ok">Operacional</strong><small>● fila saudável</small></div>
         </div>
-        <div className="board">{statuses.map(status => <section className="column" key={status}>
+        {dataError && <div className="import-error">{dataError}</div>}
+        {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className="column" key={status}>
           <header><i className={`status s${statuses.indexOf(status)}`} /><strong>{status}</strong><b>{visible.filter(t => t.status === status).length}</b></header>
           {visible.filter(t => t.status === status).map(t => <button className="ticket" key={t.id} onClick={() => setDetail(t)}>
             <div className="ticket-top"><span className={`p-${t.priority}`}>{t.priority}</span><small>#{t.id}</small></div>
@@ -110,7 +133,7 @@ export default function Home() {
             <footer><span>⑂ {app(t.appId).branch}</span><span>{t.age}</span></footer>
           </button>)}
           {!visible.some(t => t.status === status) && <div className="empty">Nenhum chamado</div>}
-        </section>)}</div>
+        </section>)}</div>}
       </> : <div className="apps">{applicationList.map(a => <article key={a.id}>
         <div className="app-icon" style={{ background: a.color }}>{a.name[0]}</div><span className="authorized">● AUTORIZADO</span>
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
