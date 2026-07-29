@@ -8,6 +8,11 @@ import { validateRepo } from "../src/lib/github";
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
+function git(args:string[], cwd:string) {
+  const token=process.env.GITHUB_TOKEN;
+  if (!token) throw new Error("GITHUB_TOKEN_NOT_CONFIGURED");
+  return run("git",["-c",`http.extraHeader=Authorization: Bearer ${token}`,...args],cwd);
+}
 function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}) {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { cwd, env:{...process.env,...env}, shell:false, windowsHide:true });
@@ -38,9 +43,9 @@ async function processJob(job:Job) {
   try {
     if (!await validateRepo(job.full_name, Number(job.github_repo_id))) throw new Error("REPOSITORY_NOT_AUTHORIZED");
     const branch=`lionban/chamado-${job.ticket_id}`;
-    await run("git",["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
-    const base=(await run("git",["rev-parse","HEAD"],repo)).trim();
-    await run("git",["checkout","-b",branch],repo);
+    await git(["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
+    const base=(await git(["rev-parse","HEAD"],repo)).trim();
+    await git(["checkout","-b",branch],repo);
     await db.query("UPDATE tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
@@ -50,18 +55,18 @@ async function processJob(job:Job) {
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
       const [bin,...args]=command.split(/\s+/); await run(bin,args,repo);
     }
-    const changed=(await run("git",["status","--porcelain"],repo)).trim();
+    const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
     if (!job.test_command) {
       await db.query("UPDATE tickets SET status='approval' WHERE id=$1",[job.ticket_id]);
       await db.query("INSERT INTO approvals(ticket_id,execution_id,reason) VALUES($1,$2,'Nenhum comando de teste confiável configurado')",[job.ticket_id,job.execution_id]);
       await db.query("UPDATE executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
     }
-    await run("git",["add","-A"],repo); await run("git",["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
-    await run("git",["push","origin",branch],repo);
-    await run("git",["checkout",safe(job.default_branch)],repo); await run("git",["pull","--ff-only","origin",safe(job.default_branch)],repo);
-    await run("git",["merge","--no-ff",branch,"-m",`merge: LionBan chamado #${job.ticket_id}`],repo);
-    await run("git",["push","origin",safe(job.default_branch)],repo);
+    await git(["add","-A"],repo); await git(["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
+    await git(["push","origin",branch],repo);
+    await git(["checkout",safe(job.default_branch)],repo); await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);
+    await git(["merge","--no-ff",branch,"-m",`merge: LionBan chamado #${job.ticket_id}`],repo);
+    await git(["push","origin",safe(job.default_branch)],repo);
     await db.query("UPDATE tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
     await db.query("UPDATE executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
     await event(job,"merge.completed","Correção validada e integrada à branch principal");
