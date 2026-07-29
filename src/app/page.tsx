@@ -1,10 +1,11 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = { id: string; name: string; repo: string; language: string; branch: string; color: string };
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
+type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 
 const apps: App[] = [
   { id: "atlas", name: "Atlas CRM", repo: "elder/atlas-crm", language: "TypeScript", branch: "main", color: "#765be5" },
@@ -21,6 +22,7 @@ const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "A
 
 export default function Home() {
   const [tickets, setTickets] = useState(seed);
+  const [applicationList, setApplicationList] = useState(apps);
   const [view, setView] = useState<"board" | "apps">("board");
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState<Ticket | null>(null);
@@ -30,8 +32,13 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Ticket["priority"]>("Média");
-  const app = (id: string) => apps.find(a => a.id === id)!;
-  const visible = useMemo(() => tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase())), [tickets, query]);
+  const [importModal, setImportModal] = useState(false);
+  const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
+  const [githubQuery, setGithubQuery] = useState("");
+  const [importing, setImporting] = useState<number | null>(null);
+  const [importError, setImportError] = useState("");
+  const app = (id: string) => applicationList.find(a => a.id === id)!;
+  const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -40,12 +47,42 @@ export default function Home() {
     setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média");
   }
 
+  async function openImport() {
+    setImportModal(true); setImportError(""); setGithubRepos([]);
+    const response = await fetch("/api/applications", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ action: "list" }),
+    });
+    if (!response.ok) {
+      const result = await response.json().catch(() => ({}));
+      setImportError(result.error ?? "Não foi possível consultar o GitHub.");
+      return;
+    }
+    setGithubRepos(await response.json());
+  }
+
+  async function importRepository(repository: GitHubRepo) {
+    setImporting(repository.id); setImportError("");
+    const response = await fetch("/api/applications", {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ repository }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      setImportError(result.error ?? "Não foi possível importar o repositório."); setImporting(null); return;
+    }
+    const imported: App = {
+      id: result.id, name: result.name, repo: result.full_name,
+      language: result.language ?? "Não detectada", branch: result.default_branch, color: "#236b50",
+    };
+    setApplicationList(current => [...current.filter(item => item.repo !== imported.repo), imported]);
+    setImporting(null); setImportModal(false); setView("apps");
+  }
+
   return <main className="shell">
     <aside className="sidebar">
       <div className="brand"><i>L</i><div><strong>LionBan</strong><span>Autonomous fixes</span></div></div>
       <nav>
         <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ <span>Quadro</span></button>
-        <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{apps.length}</b></button>
+        <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{applicationList.length}</b></button>
       </nav>
       <div className="agent"><strong><i /> Codex conectado</strong><p>Executor pronto para receber novos chamados.</p><hr /><small>37% do limite usado</small></div>
       <div className="user"><i>ES</i><div><strong>Elder</strong><span>Administrador</span></div><b>•••</b></div>
@@ -74,25 +111,39 @@ export default function Home() {
           </button>)}
           {!visible.some(t => t.status === status) && <div className="empty">Nenhum chamado</div>}
         </section>)}</div>
-      </> : <div className="apps">{apps.map(a => <article key={a.id}>
+      </> : <div className="apps">{applicationList.map(a => <article key={a.id}>
         <div className="app-icon" style={{ background: a.color }}>{a.name[0]}</div><span className="authorized">● AUTORIZADO</span>
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
         <dl><div><dt>Linguagem</dt><dd>{a.language}</dd></div><div><dt>Branch principal</dt><dd>{a.branch}</dd></div></dl>
         <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button>Configurar →</button></footer>
-      </article>)}<button className="add"><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
+      </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
     </section>
 
     {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onMouseDown={e => e.stopPropagation()}>
       <header><div><p>NOVO CHAMADO</p><h2>O que precisa ser corrigido?</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
       <label>Aplicação <b>*</b><small>O repositório ficará bloqueado após criar.</small></label>
       <div className="picker"><label>⌕ <input value={repoQuery} onChange={e => setRepoQuery(e.target.value)} placeholder="Buscar aplicação ou repositório..." /></label>
-        {apps.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => setAppId(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
+        {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => setAppId(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
       </div>
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
       <div className="row"><label>Prioridade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><div className="drop">⌁ <span>Logs e imagens<small>Adicionar depois</small></span></div></div>
       <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description}>Criar e enviar ao Codex →</button></footer>
     </form></div>}
+
+    {importModal && <div className="overlay" onMouseDown={() => setImportModal(false)}><section className="modal import-modal" onMouseDown={e => e.stopPropagation()}>
+      <header><div><p>IMPORTAR DO GITHUB</p><h2>Escolha um repositório</h2></div><button onClick={() => setImportModal(false)}>×</button></header>
+      <div className="picker import-picker"><label>⌕ <input value={githubQuery} onChange={e => setGithubQuery(e.target.value)} placeholder="Buscar nos repositórios autorizados..." /></label>
+        {githubRepos.length === 0 && !importError && <div className="import-loading">Consultando repositórios autorizados…</div>}
+        {githubRepos.filter(repo => repo.full_name.toLowerCase().includes(githubQuery.toLowerCase())).map(repo =>
+          <button type="button" key={repo.id} onClick={() => importRepository(repo)} disabled={importing !== null}>
+            <i>{repo.name[0].toUpperCase()}</i><div><strong>{repo.name}</strong><small>{repo.full_name}</small></div>
+            <em>{repo.language ?? "—"} · {repo.default_branch}</em><b>{importing === repo.id ? "…" : "＋"}</b>
+          </button>)}
+      </div>
+      {importError && <div className="import-error">{importError}</div>}
+      <footer><button className="secondary" onClick={() => setImportModal(false)}>Cancelar</button></footer>
+    </section></div>}
 
     {detail && <div className="overlay side" onMouseDown={() => setDetail(null)}><aside className="detail" onMouseDown={e => e.stopPropagation()}>
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
