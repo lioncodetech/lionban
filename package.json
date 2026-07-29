@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "migrate": "tsx db/migrate.ts",
     "worker": "tsx worker/index.ts",
     "test": "vitest run"
   },
