@@ -216,7 +216,7 @@ Fluxo obrigatório:
 Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
-    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",prompt],repo,job,progressEventId);
+    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox","workspace-write","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
     const changedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim());
     const documentationChanged=changedFiles.some(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
@@ -226,7 +226,7 @@ Leia a documentação existente do projeto e documente objetivamente a mudança 
 Prefira atualizar o documento mais relevante. Se não existir, atualize README/CHANGELOG ou crie uma nota curta em docs/.
 Não altere a implementação, não faça commit, push, merge ou deploy.`;
       const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
-      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",documentationPrompt],repo,job,documentationEventId);
+      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox","workspace-write","--json",documentationPrompt],repo,job,documentationEventId);
       const documentedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim()).filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
       if (!documentedFiles.length) throw new Error("DOCUMENTATION_NOT_UPDATED");
       await event(job,"documentation.updated","Documentação do projeto atualizada",{files:documentedFiles});
