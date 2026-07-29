@@ -11,7 +11,8 @@ const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 function git(args:string[], cwd:string) {
   const token=process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN_NOT_CONFIGURED");
-  return run("git",["-c",`http.extraHeader=Authorization: Bearer ${token}`,...args],cwd);
+  const credentials=Buffer.from(`x-access-token:${token}`).toString("base64");
+  return run("git",["-c",`http.extraHeader=Authorization: Basic ${credentials}`,...args],cwd);
 }
 function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}) {
   return new Promise<string>((resolve, reject) => {
