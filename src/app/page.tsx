@@ -22,6 +22,7 @@ const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:
 const statusToApi: Record<Status, string> = { Aberto:"open", Analisando:"analyzing", Corrigindo:"fixing", Testando:"testing", "Aguardando aprovação":"approval", Concluído:"completed", Falhou:"failed" };
 const eventLabels:Record<string,string> = {
   "ticket.created":"Chamado criado", "ticket.moved":"Chamado movimentado", "repository.cloned":"Repositório preparado",
+  "repository.validating":"Validando repositório", "repository.cloning":"Clonando repositório",
   "repository.validated":"Repositório validado", "codex.started":"Codex trabalhando",
   "execution.recovered":"Execução recuperada", "execution.retried":"Nova tentativa iniciada", "execution.failed":"Execução falhou",
   "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",

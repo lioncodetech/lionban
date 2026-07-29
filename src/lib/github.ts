@@ -6,7 +6,7 @@ export async function listAuthorizedRepos() {
   return response.json() as Promise<Array<{ id:number; name:string; full_name:string; default_branch:string; language:string|null; clone_url:string }>>;
 }
 export async function validateRepo(fullName: string, expectedId: number) {
-  const response = await fetch(`${api}/repos/${fullName}`, { headers: headers(), cache: "no-store" });
+  const response = await fetch(`${api}/repos/${fullName}`, { headers: headers(), cache: "no-store", signal:AbortSignal.timeout(15_000) });
   if (!response.ok) return false;
   return (await response.json() as { id:number }).id === expectedId;
 }

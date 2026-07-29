@@ -12,13 +12,20 @@ function git(args:string[], cwd:string) {
   const token=process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN_NOT_CONFIGURED");
   const credentials=Buffer.from(`x-access-token:${token}`).toString("base64");
-  return run("git",["-c",`http.extraHeader=Authorization: Basic ${credentials}`,...args],cwd);
+  return run("git",["-c",`http.extraHeader=Authorization: Basic ${credentials}`,...args],cwd,
+    {GIT_TERMINAL_PROMPT:"0",GCM_INTERACTIVE:"Never"},Math.max(30_000,Number(process.env.GIT_TIMEOUT_MS ?? 120_000)));
 }
-function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}) {
+function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}, timeoutMs=Math.max(60_000,Number(process.env.COMMAND_TIMEOUT_MS ?? 10*60*1000))) {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { cwd, env:{...process.env,...env}, shell:false, windowsHide:true });
     let output=""; child.stdout.on("data", d => output += d); child.stderr.on("data", d => output += d);
-    child.on("close", code => code === 0 ? resolve(output) : reject(new Error(`${command} falhou (${code}): ${output.slice(-4000)}`)));
+    let timedOut=false;
+    const timeout=setTimeout(()=>{ timedOut=true; child.kill("SIGTERM"); setTimeout(()=>child.kill("SIGKILL"),5000).unref(); },timeoutMs);
+    child.on("close", code => {
+      clearTimeout(timeout);
+      if (code === 0) resolve(output);
+      else reject(new Error(timedOut?`${command} excedeu o limite de ${Math.round(timeoutMs/1000)}s`:`${command} falhou (${code}): ${output.slice(-4000)}`));
+    });
   });
 }
 function runControlled(command:string,args:string[],cwd:string,job:Job,progressEventId:number) {
@@ -189,8 +196,10 @@ async function recoverInterruptedJobs() {
 async function processJob(job:Job) {
   const root=await mkdtemp(path.join(tmpdir(),`lionban-${job.ticket_id}-`)); const repo=path.join(root,"repo");
   try {
+    await event(job,"repository.validating",`Validando acesso ao repositório ${job.full_name}`);
     if (!await validateRepo(job.full_name, Number(job.github_repo_id))) throw new Error("REPOSITORY_NOT_AUTHORIZED");
     const branch=`lionban/chamado-${job.ticket_id}`;
+    await event(job,"repository.cloning",`Clonando ${job.full_name}`);
     await git(["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
     const base=(await git(["rev-parse","HEAD"],repo)).trim();
     await git(["checkout","-b",branch],repo);
