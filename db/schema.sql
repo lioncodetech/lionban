@@ -80,5 +80,6 @@ CREATE TABLE lb_artifacts (
   storage_key text NOT NULL,
   mime_type text,
   size_bytes bigint,
+  content bytea,
   created_at timestamptz NOT NULL DEFAULT now()
 );

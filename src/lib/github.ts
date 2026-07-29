@@ -10,4 +10,3 @@ export async function validateRepo(fullName: string, expectedId: number) {
   if (!response.ok) return false;
   return (await response.json() as { id:number }).id === expectedId;
 }
-

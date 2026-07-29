@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -48,7 +48,19 @@ async function processJob(job:Job) {
     await git(["checkout","-b",branch],repo);
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
-    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
+    const artifactRows = await db.query<{name:string; content:Buffer}>(
+      "SELECT name,content FROM lb_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
+      [job.ticket_id],
+    );
+    let attachmentNote="";
+    if (artifactRows.rowCount) {
+      const attachmentDir=path.join(repo,".lionban-attachments"); await mkdir(attachmentDir,{recursive:true});
+      for (const [index,artifact] of artifactRows.rows.entries()) {
+        const name=`${index+1}-${artifact.name.replace(/[^\w.-]/g,"_")}`; await writeFile(path.join(attachmentDir,name),artifact.content);
+      }
+      attachmentNote=`\nHá ${artifactRows.rowCount} captura(s) de tela em .lionban-attachments/. Analise essas imagens como evidência do bug. Não inclua essa pasta no commit.`;
+    }
+    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     await run(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
@@ -62,6 +74,7 @@ async function processJob(job:Job) {
       await db.query("INSERT INTO lb_approvals(ticket_id,execution_id,reason) VALUES($1,$2,'Nenhum comando de teste confiável configurado')",[job.ticket_id,job.execution_id]);
       await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]); return;
     }
+    await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
     await git(["add","-A"],repo); await git(["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
     await git(["push","origin",branch],repo);
     await git(["checkout",safe(job.default_branch)],repo); await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);

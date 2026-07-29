@@ -1,11 +1,13 @@
 "use client";
 
-import { FormEvent, useEffect, useState } from "react";
+import { ClipboardEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = { id: string; name: string; repo: string; language: string; branch: string; color: string };
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
+type Attachment = { file: File; preview: string };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
 const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analisando", fixing:"Corrigindo", testing:"Testando", approval:"Aguardando aprovação", completed:"Concluído", failed:"Falhou", cancelled:"Falhou" };
@@ -31,6 +33,8 @@ export default function Home() {
   const [githubQuery, setGithubQuery] = useState("");
   const [importing, setImporting] = useState<number | null>(null);
   const [importError, setImportError] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087" };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -59,14 +63,40 @@ export default function Home() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!appId || !title.trim() || !description.trim()) return;
+    const encodedAttachments = await Promise.all(attachments.map(async ({ file }) => {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
+      });
+      return { name:file.name, mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
+    }));
     const response = await fetch("/api/tickets", {
       method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority] }),
+      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments }),
     });
     if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
     const created = await response.json();
     setTickets(v => [{ id:Number(created.id), appId:String(created.application_id), title:String(created.title), description:String(created.description), priority, status:"Aberto", age:"agora" }, ...v]);
-    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média");
+    attachments.forEach(item => URL.revokeObjectURL(item.preview));
+    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]);
+  }
+
+  function addImages(files: File[]) {
+    const accepted = files.filter(file => ["image/png","image/jpeg","image/webp","image/gif"].includes(file.type) && file.size <= 5 * 1024 * 1024);
+    if (accepted.length !== files.length) setDataError("Use imagens PNG, JPEG, WebP ou GIF de até 5 MB.");
+    setAttachments(current => {
+      const room = Math.max(0, 5 - current.length);
+      return [...current, ...accepted.slice(0, room).map(file => ({ file, preview:URL.createObjectURL(file) }))];
+    });
+  }
+  function pasteImages(event: ClipboardEvent<HTMLFormElement>) {
+    const images = Array.from(event.clipboardData.files).filter(file => file.type.startsWith("image/"));
+    if (images.length) { event.preventDefault(); addImages(images); }
+  }
+  function dropImages(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault(); addImages(Array.from(event.dataTransfer.files));
+  }
+  function removeImage(index: number) {
+    setAttachments(current => { URL.revokeObjectURL(current[index].preview); return current.filter((_, itemIndex) => itemIndex !== index); });
   }
 
   async function openImport() {
@@ -142,7 +172,7 @@ export default function Home() {
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
     </section>
 
-    {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onMouseDown={e => e.stopPropagation()}>
+    {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onPaste={pasteImages} onMouseDown={e => e.stopPropagation()}>
       <header><div><p>NOVO CHAMADO</p><h2>O que precisa ser corrigido?</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
       <label>Aplicação <b>*</b><small>O repositório ficará bloqueado após criar.</small></label>
       <div className="picker"><label>⌕ <input value={repoQuery} onChange={e => setRepoQuery(e.target.value)} placeholder="Buscar aplicação ou repositório..." /></label>
@@ -150,7 +180,8 @@ export default function Home() {
       </div>
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
-      <div className="row"><label>Prioridade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><div className="drop">⌁ <span>Logs e imagens<small>Adicionar depois</small></span></div></div>
+      <div className="row"><label>Prioridade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
+      {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
       <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description}>Criar e enviar ao Codex →</button></footer>
     </form></div>}
 
