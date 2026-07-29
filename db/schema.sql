@@ -41,6 +41,8 @@ CREATE TABLE lb_tickets (
   auto_push boolean NOT NULL DEFAULT true,
   auto_pull_request boolean NOT NULL DEFAULT false,
   auto_deploy boolean NOT NULL DEFAULT false,
+  create_tag boolean NOT NULL DEFAULT false,
+  release_tag text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );

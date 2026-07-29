@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 function git(args:string[], cwd:string) {
@@ -46,6 +46,10 @@ async function triggerDeploy(job:Job) {
   if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
   await event(job,"deploy.triggered","Deploy automático solicitado ao EasyPanel");
 }
+async function assertNotCancelled(job:Job) {
+  const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lb_tickets WHERE id=$1",[job.ticket_id]);
+  if (result.rows[0]?.cancellation_requested) throw new Error("EXECUTION_CANCELLED");
+}
 async function heartbeat(codexAuthenticated:boolean, statusMessage:string) {
   await db.query(`INSERT INTO lb_worker_heartbeats(worker_id,last_seen,codex_authenticated,status_message)
     VALUES($1,now(),$2,$3)
@@ -66,7 +70,7 @@ async function claim():Promise<Job|null> {
     await client.query("BEGIN");
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
-      t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url
+      t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag
       FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true ORDER BY t.created_at FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
@@ -86,6 +90,7 @@ async function processJob(job:Job) {
     await git(["checkout","-b",branch],repo);
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
+    await assertNotCancelled(job);
     const artifactRows = await db.query<{name:string; content:Buffer}>(
       "SELECT name,content FROM lb_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
       [job.ticket_id],
@@ -101,9 +106,11 @@ async function processJob(job:Job) {
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     await run(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo);
+    await assertNotCancelled(job);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
       const [bin,...args]=command.split(/\s+/); await run(bin,args,repo);
+      await assertNotCancelled(job);
     }
     const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
@@ -137,15 +144,21 @@ async function processJob(job:Job) {
     await git(["checkout",safe(job.default_branch)],repo); await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);
     await git(["merge","--no-ff",branch,"-m",`merge: LionBan chamado #${job.ticket_id}`],repo);
     await git(["push","origin",safe(job.default_branch)],repo);
+    if (job.create_tag && job.release_tag) {
+      await git(["tag","-a",safe(job.release_tag),"-m",`Release ${job.release_tag} - LionBan chamado #${job.ticket_id}`],repo);
+      await git(["push","origin",safe(job.release_tag)],repo);
+      await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
+    }
     if (job.auto_deploy) await triggerDeploy(job);
     await db.query("UPDATE lb_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
     await db.query("UPDATE lb_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
     await event(job,"merge.completed","Correção validada e integrada à branch principal");
   } catch(error) {
     const message=error instanceof Error?error.message:String(error);
-    await db.query("UPDATE lb_tickets SET status='failed',updated_at=now() WHERE id=$1",[job.ticket_id]);
-    await db.query("UPDATE lb_executions SET state='failed',finished_at=now(),error_message=$1 WHERE id=$2",[message.slice(0,4000),job.execution_id]);
-    await event(job,"execution.failed","A execução falhou",{error:message.slice(0,1000)});
+    const cancelled=message === "EXECUTION_CANCELLED";
+    await db.query("UPDATE lb_tickets SET status=$1,updated_at=now() WHERE id=$2",[cancelled?"cancelled":"failed",job.ticket_id]);
+    await db.query("UPDATE lb_executions SET state=$1,finished_at=now(),error_message=$2 WHERE id=$3",[cancelled?"cancelled":"failed",cancelled?null:message.slice(0,4000),job.execution_id]);
+    await event(job,cancelled?"execution.cancelled":"execution.failed",cancelled?"Execução cancelada":"A execução falhou",cancelled?{}:{error:message.slice(0,1000)});
   } finally { await rm(root,{recursive:true,force:true}); }
 }
 async function main() {

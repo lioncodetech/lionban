@@ -9,6 +9,10 @@ type Ticket = { id: number; appId: string; title: string; description: string; p
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
 type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
+type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
+type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
+type TicketDetails = { events:TicketEvent[]; executions:TicketExecution[] };
+type RepoTag = { name:string; commit:{sha:string} };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
 const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analisando", fixing:"Corrigindo", testing:"Testando", approval:"Aguardando aprovação", completed:"Concluído", failed:"Falhou", cancelled:"Falhou" };
@@ -44,6 +48,11 @@ export default function Home() {
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [configApp, setConfigApp] = useState<App | null>(null);
   const [deployWebhookUrl, setDeployWebhookUrl] = useState("");
+  const [ticketDetails, setTicketDetails] = useState<TicketDetails | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
+  const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
+  const [createTag, setCreateTag] = useState(false);
+  const [releaseTag, setReleaseTag] = useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087", deployConfigured:false };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
@@ -102,6 +111,37 @@ export default function Home() {
     }
   }
 
+  async function openTicket(ticket:Ticket) {
+    setDetail(ticket); setTicketDetails(null); setShowLogs(false);
+    const response=await fetch(`/api/tickets/${ticket.id}`,{cache:"no-store"});
+    if (response.ok) {
+      const result=await response.json();
+      setTicketDetails({events:result.events ?? [],executions:result.executions ?? []});
+    }
+  }
+
+  async function cancelExecution() {
+    if (!detail || !window.confirm(`Cancelar a execução do chamado #${detail.id}?`)) return;
+    const response=await fetch(`/api/tickets/${detail.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({cancel:true})});
+    if (!response.ok) { setDataError("Não foi possível solicitar o cancelamento."); return; }
+    setTickets(current => current.map(ticket => ticket.id===detail.id?{...ticket,status:"Falhou"}:ticket));
+    setDetail({...detail,status:"Falhou"});
+    await openTicket({...detail,status:"Falhou"});
+  }
+
+  function suggestNextTag(tags:RepoTag[]) {
+    const versions=tags.map(tag => ({tag:tag.name,match:tag.name.match(/^v?(\d+)\.(\d+)\.(\d+)$/)})).filter(item => item.match)
+      .sort((a,b) => Number(b.match![1])-Number(a.match![1]) || Number(b.match![2])-Number(a.match![2]) || Number(b.match![3])-Number(a.match![3]));
+    const latest=versions[0];
+    return latest?`${latest.tag.startsWith("v")?"v":""}${latest.match![1]}.${latest.match![2]}.${Number(latest.match![3])+1}`:"v1.0.0";
+  }
+
+  async function chooseApplication(id:string) {
+    setAppId(id); setRepoTags([]); setCreateTag(false); setReleaseTag("");
+    const response=await fetch(`/api/applications/${id}/tags`,{cache:"no-store"});
+    if (response.ok) { const tags=await response.json(); setRepoTags(tags); setReleaseTag(suggestNextTag(tags)); }
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!appId || !title.trim() || !description.trim()) return;
@@ -113,7 +153,7 @@ export default function Home() {
     }));
     const response = await fetch("/api/tickets", {
       method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments, autoCommit, autoPush, autoPullRequest, autoDeploy }),
+      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments, autoCommit, autoPush, autoPullRequest, autoDeploy, createTag, releaseTag:createTag?releaseTag:undefined }),
     });
     if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
     const created = await response.json();
@@ -121,6 +161,7 @@ export default function Home() {
     attachments.forEach(item => URL.revokeObjectURL(item.preview));
     setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
+    setCreateTag(false); setReleaseTag(""); setRepoTags([]);
   }
 
   function addImages(files: File[]) {
@@ -211,7 +252,7 @@ export default function Home() {
         {dataError && <div className="import-error">{dataError}</div>}
         {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className={`column ${draggedTicket !== null ? "drop-enabled" : ""}`} key={status} onDragOver={event => event.preventDefault()} onDrop={() => { if (draggedTicket !== null) moveTicket(draggedTicket, status); setDraggedTicket(null); }}>
           <header><i className={`status s${statuses.indexOf(status)}`} /><strong>{status}</strong><b>{visible.filter(t => t.status === status).length}</b></header>
-          {visible.filter(t => t.status === status).map(t => <button className={`ticket ${draggedTicket === t.id ? "dragging" : ""}`} draggable key={t.id} onDragStart={event => { event.dataTransfer.effectAllowed = "move"; setDraggedTicket(t.id); }} onDragEnd={() => setDraggedTicket(null)} onClick={() => setDetail(t)}>
+          {visible.filter(t => t.status === status).map(t => <button className={`ticket ${draggedTicket === t.id ? "dragging" : ""}`} draggable key={t.id} onDragStart={event => { event.dataTransfer.effectAllowed = "move"; setDraggedTicket(t.id); }} onDragEnd={() => setDraggedTicket(null)} onClick={() => openTicket(t)}>
             <div className="ticket-top"><span className={`p-${t.priority}`}>{t.priority}</span><small>#{t.id}</small></div>
             <h3>{t.title}</h3><p>{t.description}</p>
             <div className="repo"><i style={{ background: app(t.appId).color }}>{app(t.appId).name[0]}</i><div><strong>{app(t.appId).name}</strong><small>{app(t.appId).repo}</small></div></div>
@@ -231,7 +272,7 @@ export default function Home() {
       <header><div><p>NOVO CHAMADO</p><h2>O que precisa ser corrigido?</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
       <label>Aplicação <b>*</b><small>O repositório ficará bloqueado após criar.</small></label>
       <div className="picker"><label>⌕ <input value={repoQuery} onChange={e => setRepoQuery(e.target.value)} placeholder="Buscar aplicação ou repositório..." /></label>
-        {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => setAppId(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
+        {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => chooseApplication(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
       </div>
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
@@ -241,9 +282,11 @@ export default function Home() {
         <label><input type="checkbox" checked={autoPush} onChange={e => { setAutoPush(e.target.checked); if (e.target.checked) setAutoCommit(true); else { setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Push automático</strong><small>Enviar a branch lionban/chamado-ID</small></span></label>
         <label><input type="checkbox" checked={autoPullRequest} onChange={e => { setAutoPullRequest(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); setAutoDeploy(false); } }} /><span><strong>Pull Request automático</strong><small>Criar PR em vez de integrar diretamente</small></span></label>
         <label className={!appId || !app(appId).deployConfigured || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={autoDeploy} disabled={!appId || !app(appId).deployConfigured || autoPullRequest} onChange={e => { setAutoDeploy(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Deploy automático</strong><small>{appId && app(appId).deployConfigured ? (autoPullRequest ? "Disponível somente sem Pull Request" : "Disparar webhook do EasyPanel após integrar") : "Configure o webhook na aplicação"}</small></span></label>
+        <label className={!appId || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={createTag} disabled={!appId || autoPullRequest} onChange={e => { setCreateTag(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Criar tag e ativar Action</strong><small>{autoPullRequest?"Disponível após integração, sem Pull Request":repoTags.length?`${repoTags.length} tag(s) encontrada(s)`:"Nenhuma tag encontrada; iniciar em v1.0.0"}</small></span></label>
       </fieldset>
+      {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div></div>}
       {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
-      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description}>Criar e enviar ao Codex →</button></footer>
+      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>Criar e enviar ao Codex →</button></footer>
     </form></div>}
 
     {configApp && <div className="overlay" onMouseDown={() => setConfigApp(null)}><form className="modal config-modal" onSubmit={saveApplicationConfig} onMouseDown={e => e.stopPropagation()}>
@@ -267,12 +310,14 @@ export default function Home() {
       <footer><button className="secondary" onClick={() => setImportModal(false)}>Cancelar</button></footer>
     </section></div>}
 
-    {detail && <div className="overlay side" onMouseDown={() => setDetail(null)}><aside className="detail" onMouseDown={e => e.stopPropagation()}>
+    {detail && <div className="overlay side" onMouseDown={() => setDetail(null)}><aside className="detail wide" onMouseDown={e => e.stopPropagation()}>
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
-      <p className="description">{detail.description}</p><h4>ATIVIDADE DO AGENTE</h4>
-      <div className="timeline"><div className="done"><i>✓</i><span><strong>Repositório validado e clonado</strong><small>branch lionban/chamado-{detail.id}</small></span></div><div className="done"><i>✓</i><span><strong>Investigação iniciada</strong><small>18 arquivos relacionados analisados</small></span></div><div className="running"><i>◌</i><span><strong>Reproduzindo o erro</strong><small>Criando um teste de regressão...</small></span></div><div><i>4</i><span><strong>Corrigir e validar</strong><small>Aguardando etapa anterior</small></span></div></div>
-      <footer><button className="danger">Cancelar execução</button><button className="secondary">Ver logs completos</button></footer>
+      <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
+      {!ticketDetails && <div className="detail-loading">Carregando atividade…</div>}
+      {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{event.message}</strong><small>{new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
+      {showLogs && ticketDetails && <section className="full-logs"><h4>LOGS COMPLETOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?new Date(execution.started_at).toLocaleString("pt-BR"):"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<pre>{JSON.stringify(event.metadata,null,2)}</pre>}</article>)}</section>}
+      <footer><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou"].includes(detail.status)}>Cancelar execução</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></footer>
     </aside></div>}
   </main>;
 }

@@ -6,6 +6,7 @@ const initialVersion = "001_lb_initial";
 const attachmentsVersion = "002_lb_artifact_content";
 const heartbeatVersion = "003_lb_worker_heartbeat";
 const automationOptionsVersion = "004_lb_automation_options";
+const releaseTagsVersion = "005_lb_release_tags";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -52,6 +53,15 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [automationOptionsVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${automationOptionsVersion} aplicada`);
+    }
+    const releaseTagsApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [releaseTagsVersion]);
+    if (!releaseTagsApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS create_tag boolean NOT NULL DEFAULT false");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS release_tag text");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [releaseTagsVersion]);
+      await client.query("COMMIT");
+      console.log(`Migração ${releaseTagsVersion} aplicada`);
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

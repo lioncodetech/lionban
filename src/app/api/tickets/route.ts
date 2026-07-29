@@ -11,6 +11,8 @@ const ticketInput = z.object({
   autoPush: z.boolean().default(true),
   autoPullRequest: z.boolean().default(false),
   autoDeploy: z.boolean().default(false),
+  createTag: z.boolean().default(false),
+  releaseTag: z.string().trim().regex(/^v?[0-9A-Za-z][0-9A-Za-z._-]{0,63}$/).optional(),
   attachments: z.array(z.object({
     name: z.string().min(1).max(180),
     mimeType: z.enum(["image/png","image/jpeg","image/webp","image/gif"]),
@@ -31,8 +33,9 @@ export async function POST(request: Request) {
     if (!app.rowCount) throw new Error("APP_NOT_FOUND");
     if (parsed.data.autoPullRequest && (!parsed.data.autoCommit || !parsed.data.autoPush)) throw new Error("PR_REQUIRES_PUSH");
     if (parsed.data.autoDeploy && (!parsed.data.autoCommit || !parsed.data.autoPush || parsed.data.autoPullRequest)) throw new Error("DEPLOY_REQUIRES_DIRECT_MERGE");
-    const created = await client.query(`INSERT INTO lb_tickets(application_id,title,description,priority,auto_commit,auto_push,auto_pull_request,auto_deploy)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *`, [parsed.data.applicationId, parsed.data.title, parsed.data.description, parsed.data.priority, parsed.data.autoCommit, parsed.data.autoPush, parsed.data.autoPullRequest, parsed.data.autoDeploy]);
+    if (parsed.data.createTag && (!parsed.data.releaseTag || parsed.data.autoPullRequest || !parsed.data.autoPush)) throw new Error("INVALID_RELEASE_TAG_FLOW");
+    const created = await client.query(`INSERT INTO lb_tickets(application_id,title,description,priority,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`, [parsed.data.applicationId, parsed.data.title, parsed.data.description, parsed.data.priority, parsed.data.autoCommit, parsed.data.autoPush, parsed.data.autoPullRequest, parsed.data.autoDeploy,parsed.data.createTag,parsed.data.releaseTag ?? null]);
     await client.query("INSERT INTO lb_executions(ticket_id,application_id) VALUES($1,$2)", [created.rows[0].id, parsed.data.applicationId]);
     await client.query("INSERT INTO lb_events(ticket_id,kind,message) VALUES($1,'ticket.created','Chamado criado e enfileirado')", [created.rows[0].id]);
     for (const attachment of parsed.data.attachments) {

@@ -10,3 +10,8 @@ export async function validateRepo(fullName: string, expectedId: number) {
   if (!response.ok) return false;
   return (await response.json() as { id:number }).id === expectedId;
 }
+export async function listRepositoryTags(fullName:string) {
+  const response=await fetch(`${api}/repos/${fullName}/tags?per_page=30`,{headers:headers(),cache:"no-store"});
+  if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
+  return response.json() as Promise<Array<{name:string;commit:{sha:string}}>>;
+}
