@@ -26,18 +26,30 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   return new Promise<string>((resolve,reject) => {
     const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
     let output=""; let stopping=false; let stdoutBuffer=""; let latestActivity="Analisando o chamado";
+    const transcript:Array<{at:string;type:string;text:string}>=[];
+    const recordActivity=(type:string,text:string) => {
+      const clean=text.replace(/\s+/g," ").trim().slice(0,500);
+      if (!clean || transcript.at(-1)?.text===clean) return;
+      transcript.push({at:new Date().toISOString(),type,text:clean});
+      if (transcript.length>60) transcript.shift();
+    };
     const activityFromEvent=(value:unknown) => {
       if (!value || typeof value !== "object") return;
       const record=value as Record<string,unknown>;
       const item=(record.item && typeof record.item === "object" ? record.item : {}) as Record<string,unknown>;
-      if (item.type === "agent_message" && typeof item.text === "string") latestActivity=item.text.replace(/\s+/g," ").slice(0,240);
-      else if (item.type === "command_execution") latestActivity="Executando uma verificação no projeto";
-      else if (item.type === "file_change") latestActivity="Aplicando alterações nos arquivos";
-      else if (item.type === "mcp_tool_call") latestActivity="Consultando uma ferramenta";
+      if (item.type === "agent_message" && typeof item.text === "string") {
+        latestActivity=item.text.replace(/\s+/g," ").slice(0,240); recordActivity("message",item.text);
+      } else if (item.type === "command_execution") {
+        latestActivity="Executando uma verificação no projeto"; recordActivity("action",latestActivity);
+      } else if (item.type === "file_change") {
+        latestActivity="Aplicando alterações nos arquivos"; recordActivity("action",latestActivity);
+      } else if (item.type === "mcp_tool_call") {
+        latestActivity="Consultando uma ferramenta"; recordActivity("action",latestActivity);
+      }
       else if (item.type === "todo_list" && Array.isArray(item.items)) {
         const active=(item.items as Array<Record<string,unknown>>).find(entry=>entry.status==="in_progress");
-        if (active && typeof active.text==="string") latestActivity=active.text.slice(0,240);
-      } else if (record.type === "turn.started") latestActivity="Analisando o chamado";
+        if (active && typeof active.text==="string") { latestActivity=active.text.slice(0,240); recordActivity("step",active.text); }
+      } else if (record.type === "turn.started") { latestActivity="Analisando o chamado"; recordActivity("action",latestActivity); }
     };
     child.stdout.on("data",d => {
       const text=String(d); output+=text; stdoutBuffer+=text;
@@ -65,7 +77,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
       const elapsedSeconds=Math.floor((Date.now()-startedAt)/1000);
       try {
         await db.query("UPDATE lb_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
-          [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,lastSignal:new Date().toISOString(),latestActivity}),progressEventId]);
+          [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,lastSignal:new Date().toISOString(),latestActivity,transcript}),progressEventId]);
       } catch(error) { console.error("progress-update:",error); }
     },5000);
     child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); clearInterval(progress); reject(error); });
@@ -177,7 +189,7 @@ async function processJob(job:Job) {
     }
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
-    const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString()});
+    const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
     await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
