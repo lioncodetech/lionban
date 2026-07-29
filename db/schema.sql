@@ -1,17 +1,17 @@
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
-CREATE TYPE ticket_status AS ENUM ('open','analyzing','fixing','testing','approval','completed','failed','cancelled');
-CREATE TYPE priority AS ENUM ('low','medium','high','critical');
+CREATE TYPE lb_ticket_status AS ENUM ('open','analyzing','fixing','testing','approval','completed','failed','cancelled');
+CREATE TYPE lb_priority AS ENUM ('low','medium','high','critical');
 
-CREATE TABLE repository_connections (
+CREATE TABLE lb_repository_connections (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   provider text NOT NULL DEFAULT 'github',
   installation_id bigint,
   account_login text NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE applications (
+CREATE TABLE lb_applications (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  connection_id uuid NOT NULL REFERENCES repository_connections(id),
+  connection_id uuid NOT NULL REFERENCES lb_repository_connections(id),
   github_repo_id bigint NOT NULL UNIQUE,
   name text NOT NULL,
   full_name text NOT NULL UNIQUE,
@@ -25,13 +25,13 @@ CREATE TABLE applications (
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE tickets (
+CREATE TABLE lb_tickets (
   id bigserial PRIMARY KEY,
-  application_id uuid NOT NULL REFERENCES applications(id),
+  application_id uuid NOT NULL REFERENCES lb_applications(id),
   title text NOT NULL CHECK (length(title) BETWEEN 3 AND 160),
   description text NOT NULL CHECK (length(description) >= 10),
-  priority priority NOT NULL DEFAULT 'medium',
-  status ticket_status NOT NULL DEFAULT 'open',
+  priority lb_priority NOT NULL DEFAULT 'medium',
+  status lb_ticket_status NOT NULL DEFAULT 'open',
   branch_name text,
   base_commit text,
   result_summary text,
@@ -39,10 +39,10 @@ CREATE TABLE tickets (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE executions (
+CREATE TABLE lb_executions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id bigint NOT NULL REFERENCES tickets(id),
-  application_id uuid NOT NULL REFERENCES applications(id),
+  ticket_id bigint NOT NULL REFERENCES lb_tickets(id),
+  application_id uuid NOT NULL REFERENCES lb_applications(id),
   state text NOT NULL DEFAULT 'queued',
   attempt integer NOT NULL DEFAULT 1,
   worker_id text,
@@ -52,29 +52,29 @@ CREATE TABLE executions (
   error_message text,
   UNIQUE(ticket_id, attempt)
 );
-CREATE UNIQUE INDEX one_active_execution_per_app ON executions(application_id)
+CREATE UNIQUE INDEX lb_one_active_execution_per_app ON lb_executions(application_id)
   WHERE state IN ('queued','running');
-CREATE TABLE events (
+CREATE TABLE lb_events (
   id bigserial PRIMARY KEY,
-  ticket_id bigint NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
-  execution_id uuid REFERENCES executions(id) ON DELETE CASCADE,
+  ticket_id bigint NOT NULL REFERENCES lb_tickets(id) ON DELETE CASCADE,
+  execution_id uuid REFERENCES lb_executions(id) ON DELETE CASCADE,
   kind text NOT NULL,
   message text NOT NULL,
   metadata jsonb NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE approvals (
+CREATE TABLE lb_approvals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id bigint NOT NULL REFERENCES tickets(id),
-  execution_id uuid NOT NULL REFERENCES executions(id),
+  ticket_id bigint NOT NULL REFERENCES lb_tickets(id),
+  execution_id uuid NOT NULL REFERENCES lb_executions(id),
   reason text NOT NULL,
   decision text CHECK (decision IN ('approved','rejected')),
   decided_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-CREATE TABLE artifacts (
+CREATE TABLE lb_artifacts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  ticket_id bigint NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+  ticket_id bigint NOT NULL REFERENCES lb_tickets(id) ON DELETE CASCADE,
   kind text NOT NULL,
   name text NOT NULL,
   storage_key text NOT NULL,
@@ -82,4 +82,3 @@ CREATE TABLE artifacts (
   size_bytes bigint,
   created_at timestamptz NOT NULL DEFAULT now()
 );
-
