@@ -24,9 +24,10 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
 function runControlled(command:string,args:string[],cwd:string,job:Job,progressEventId:number) {
   const timeoutMs=Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000));
   const activityTimeoutMs=Math.max(60_000,Number(process.env.CODEX_ACTIVITY_TIMEOUT_MS ?? 8*60*1000));
+  const startupTimeoutMs=Math.max(30_000,Number(process.env.CODEX_START_TIMEOUT_MS ?? 90_000));
   return new Promise<string>((resolve,reject) => {
     const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
-    let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Analisando o chamado"; let lastActivityAt=Date.now();
+    let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Iniciando o Codex"; let lastActivityAt=Date.now(); let receivedStructuredEvent=false;
     const transcript:Array<{at:string;type:string;text:string}>=[];
     const recordActivity=(type:string,text:string) => {
       const clean=text.replace(/\s+/g," ").trim().slice(0,500);
@@ -37,6 +38,8 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
     };
     const activityFromEvent=(value:unknown) => {
       if (!value || typeof value !== "object") return;
+      receivedStructuredEvent=true;
+      lastActivityAt=Date.now();
       const record=value as Record<string,unknown>;
       const item=(record.item && typeof record.item === "object" ? record.item : {}) as Record<string,unknown>;
       if (item.type === "agent_message" && typeof item.text === "string") {
@@ -86,13 +89,17 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
     const progress=setInterval(async () => {
       const elapsedSeconds=Math.floor((Date.now()-startedAt)/1000);
       const inactiveSeconds=Math.floor((Date.now()-lastActivityAt)/1000);
+      if (!receivedStructuredEvent && Date.now()-startedAt>startupTimeoutMs) {
+        stop("CODEX_STARTUP_NO_RESPONSE");
+        return;
+      }
       if (Date.now()-lastActivityAt>activityTimeoutMs) {
         stop("CODEX_NO_ACTIVITY");
         return;
       }
       try {
         await db.query("UPDATE lb_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
-          [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,inactiveSeconds,lastSignal:new Date().toISOString(),latestActivity,activityTimeoutMinutes:Math.round(activityTimeoutMs/60000),transcript}),progressEventId]);
+          [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,inactiveSeconds,lastSignal:new Date().toISOString(),latestActivity,receivedStructuredEvent,startupTimeoutSeconds:Math.round(startupTimeoutMs/1000),activityTimeoutMinutes:Math.round(activityTimeoutMs/60000),transcript}),progressEventId]);
       } catch(error) { console.error("progress-update:",error); }
     },5000);
     child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); clearInterval(progress); reject(error); });
