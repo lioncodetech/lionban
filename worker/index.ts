@@ -21,6 +21,34 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
     child.on("close", code => code === 0 ? resolve(output) : reject(new Error(`${command} falhou (${code}): ${output.slice(-4000)}`)));
   });
 }
+function runControlled(command:string,args:string[],cwd:string,job:Job) {
+  const timeoutMs=Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000));
+  return new Promise<string>((resolve,reject) => {
+    const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
+    let output=""; let stopping=false;
+    child.stdout.on("data",d => output+=d); child.stderr.on("data",d => output+=d);
+    const stop=(reason:string) => {
+      if (stopping) return; stopping=true; child.kill("SIGTERM");
+      setTimeout(()=>child.kill("SIGKILL"),5000).unref();
+      failureReason=reason;
+    };
+    let failureReason="";
+    const timeout=setTimeout(()=>stop("CODEX_TIMEOUT"),timeoutMs);
+    const cancellation=setInterval(async () => {
+      try {
+        const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lb_tickets WHERE id=$1",[job.ticket_id]);
+        if (result.rows[0]?.cancellation_requested) stop("EXECUTION_CANCELLED");
+      } catch(error) { console.error("cancel-check:",error); }
+    },2000);
+    child.on("error",error => { clearTimeout(timeout); clearInterval(cancellation); reject(error); });
+    child.on("close",code => {
+      clearTimeout(timeout); clearInterval(cancellation);
+      if (failureReason) reject(new Error(failureReason));
+      else if (code===0) resolve(output);
+      else reject(new Error(`${command} falhou (${code}): ${output.slice(-4000)}`));
+    });
+  });
+}
 async function event(job:Job, kind:string, message:string, metadata={}) {
   await db.query("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5)", [job.ticket_id,job.execution_id,kind,message,metadata]);
 }
@@ -80,6 +108,21 @@ async function claim():Promise<Job|null> {
     await client.query("COMMIT"); return job;
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
+async function recoverInterruptedJobs() {
+  const client=await db.connect();
+  try {
+    await client.query("BEGIN");
+    const recovered=await client.query<{ticket_id:number}>(`UPDATE lb_executions
+      SET state='queued',worker_id=NULL,started_at=NULL,error_message=NULL
+      WHERE state='running' RETURNING ticket_id`);
+    for (const row of recovered.rows) {
+      await client.query("UPDATE lb_tickets SET status='open',cancellation_requested=false,updated_at=now() WHERE id=$1",[row.ticket_id]);
+      await client.query("INSERT INTO lb_events(ticket_id,kind,message) VALUES($1,'execution.recovered','Execução interrompida foi recuperada e voltou para a fila')",[row.ticket_id]);
+    }
+    await client.query("COMMIT");
+    if (recovered.rowCount) console.log(`${recovered.rowCount} execução(ões) recuperada(s)`);
+  } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
+}
 async function processJob(job:Job) {
   const root=await mkdtemp(path.join(tmpdir(),`lionban-${job.ticket_id}-`)); const repo=path.join(root,"repo");
   try {
@@ -105,7 +148,8 @@ async function processJob(job:Job) {
     }
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.\nTítulo: ${job.title}\nDescrição: ${job.description}${attachmentNote}\nPrimeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura. Não faça commit, push, merge, deploy, nem acesse fora deste diretório. Execute os testes relevantes e produza um resumo final.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
-    await run(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo);
+    await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000)});
+    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--full-auto",prompt],repo,job);
     await assertNotCancelled(job);
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
@@ -163,6 +207,7 @@ async function processJob(job:Job) {
 }
 async function main() {
   console.log(`${workerId} iniciado`);
+  await recoverInterruptedJobs();
   const status=await codexStatus();
   await heartbeat(status.authenticated,status.message);
   const timer=setInterval(() => heartbeat(status.authenticated,status.message).catch(error => console.error("heartbeat:",error)),10000);
