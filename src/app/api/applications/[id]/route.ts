@@ -2,7 +2,14 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { query } from "@/lib/db";
 
-const input = z.object({ deployWebhookUrl:z.union([z.string().url().startsWith("https://"), z.literal("")]) });
+const deployWebhookUrl=z.string().trim().max(2048).refine(value => {
+  if (value === "") return true;
+  try {
+    const url=new URL(value);
+    return url.protocol === "https:" || (url.protocol === "http:" && url.pathname.startsWith("/api/deploy/"));
+  } catch { return false; }
+},"Use uma URL HTTPS ou o Deployment Trigger HTTP /api/deploy/ fornecido pelo EasyPanel");
+const input = z.object({ deployWebhookUrl });
 
 export async function PATCH(request:Request, context:{ params:Promise<{ id:string }> }) {
   const { id } = await context.params;
