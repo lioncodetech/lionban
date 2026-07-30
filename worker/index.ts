@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
@@ -208,7 +208,7 @@ async function claim():Promise<Job|null> {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
-    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,
+    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
@@ -243,8 +243,8 @@ async function recoverInterruptedJobs() {
 }
 async function publishChanges(job:Job, repo:string, branch:string, approvedResume=false) {
   if (!job.auto_commit) {
-    if (approvedResume) {
-      await finishApprovedPatchOnly(job,"Correção aprovada e preservada como patch; commit automático não foi solicitado");
+    if (approvedResume || job.priority==="low" || job.priority==="medium") {
+      await finishApprovedPatchOnly(job,`${approvedResume?"Correção aprovada":"Correção concluída"} e preservada como patch; commit automático não foi solicitado`);
       return;
     }
     await savePatch(job,repo);
@@ -257,8 +257,8 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   await event(job,"commit.created","Commit automático criado");
   if (!job.auto_push) {
     await savePatch(job,repo,true);
-    if (approvedResume) {
-      await finishApprovedPatchOnly(job,"Correção aprovada e preservada como commit em patch; push automático não foi solicitado");
+    if (approvedResume || job.priority==="low" || job.priority==="medium") {
+      await finishApprovedPatchOnly(job,`${approvedResume?"Correção aprovada":"Correção concluída"} e preservada como commit em patch; push automático não foi solicitado`);
       return;
     }
     await requestApproval(job,"Revise o commit preservado antes de concluir o chamado");
@@ -337,6 +337,7 @@ async function processJob(job:Job) {
     }
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.
 Título: ${job.title}
+Criticidade: ${{low:"Baixa",medium:"Média",high:"Alta",critical:"Crítica"}[job.priority]}
 Descrição: ${job.description}${attachmentNote}
 
 Fluxo obrigatório:
@@ -373,14 +374,21 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     }
     const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
-    if (!job.test_command) {
+    const requiresSeverityApproval=job.priority==="high" || job.priority==="critical";
+    if (!job.test_command && requiresSeverityApproval) {
       await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
       await savePatch(job,repo);
       await event(job,"patch.prepared","Correção preservada para aprovação excepcional");
-      await requestApproval(job,"Nenhum comando de teste confiável está configurado");
+      await requestApproval(job,`Chamado de criticidade ${job.priority==="critical"?"Crítica":"Alta"} sem comando de teste confiável configurado`);
       return;
     }
     await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
+    if (requiresSeverityApproval) {
+      await savePatch(job,repo);
+      await event(job,"patch.prepared","Correção preservada antes da aprovação por criticidade");
+      await requestApproval(job,`Chamados de criticidade ${job.priority==="critical"?"Crítica":"Alta"} exigem aprovação antes de publicar`);
+      return;
+    }
     await publishChanges(job,repo,branch);
   } catch(error) {
     const message=error instanceof Error?error.message:String(error);
