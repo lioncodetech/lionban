@@ -12,6 +12,7 @@ const queuePriorityVersion = "007_lb_queue_priority";
 const workerPauseVersion = "008_lb_worker_pause";
 const settingsVersion = "009_lb_settings_retention_and_environment";
 const workforceRenameVersion = "010_lwf_rename";
+const workforceSchemaVersion = "011_lwf_schema";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -164,6 +165,24 @@ async function migrate() {
       await client.query("CREATE VIEW lb_worker_heartbeats AS SELECT * FROM lwf_worker_heartbeats");
       await client.query("CREATE VIEW lb_worker_control AS SELECT * FROM lwf_worker_control");
       await client.query("CREATE VIEW lb_settings AS SELECT * FROM lwf_settings");
+      await client.query("COMMIT");
+    }
+    const workforceSchemaApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [workforceSchemaVersion]);
+    if (!workforceSchemaApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("CREATE SCHEMA IF NOT EXISTS lionworkforce AUTHORIZATION CURRENT_USER");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [workforceSchemaVersion]);
+      for (const table of [
+        "lwf_repository_connections","lwf_applications","lwf_tickets","lwf_executions",
+        "lwf_events","lwf_approvals","lwf_artifacts","lwf_worker_heartbeats",
+        "lwf_worker_control","lwf_settings","lwf_migrations",
+      ]) {
+        await client.query(`ALTER TABLE IF EXISTS public.${table} SET SCHEMA lionworkforce`);
+      }
+      await client.query("ALTER SEQUENCE IF EXISTS public.lwf_tickets_id_seq SET SCHEMA lionworkforce");
+      await client.query("ALTER SEQUENCE IF EXISTS public.lwf_events_id_seq SET SCHEMA lionworkforce");
+      await client.query("ALTER TYPE public.lwf_ticket_status SET SCHEMA lionworkforce");
+      await client.query("ALTER TYPE public.lwf_priority SET SCHEMA lionworkforce");
       await client.query("COMMIT");
     }
   } catch (error) {

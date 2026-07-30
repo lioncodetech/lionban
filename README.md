@@ -15,6 +15,8 @@ Central pessoal para registrar bugs e delegar correções ao Codex, sempre no re
 4. Monte um volume persistente em `/root/.codex` no worker e autentique o Codex uma vez pelo terminal do EasyPanel.
 5. Exponha somente o serviço web por HTTPS. PostgreSQL e worker permanecem privados.
 
+Use `?schema=lionworkforce` na `DATABASE_URL` dos serviços web e worker. O driver configura `search_path=lionworkforce,public`, e a migração `011_lwf_schema` cria o schema e move para ele todas as estruturas `lwf_*` existentes sem apagar os dados.
+
 O worker valida o ID do repositório, cria `lionworkforce/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Ao criar uma tag em um projeto Node.js, o worker sincroniza antes a versão do `package.json` (e do lockfile atualizado pelo npm), inclui a mudança no commit e somente depois envia a tag.
 
 O login usa `ADMIN_USERNAME` (padrão `admin` quando ausente) e `ADMIN_PASSWORD_HASH`. Chamados concluídos, falhados ou cancelados são arquivados e removidos segundo os prazos de **Configurações** (7 e 15 dias por padrão). O worker executa essa manutenção ao iniciar e a cada hora.

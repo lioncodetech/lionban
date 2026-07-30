@@ -1,9 +1,19 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
 const globalForDb = globalThis as unknown as { lionworkforcePool?: Pool };
+function configuredSchema() {
+  const connectionString=process.env.DATABASE_URL;
+  if (!connectionString) return "lionworkforce";
+  try {
+    const schema=new URL(connectionString).searchParams.get("schema")?.trim() || "lionworkforce";
+    return /^[a-z_][a-z0-9_]*$/i.test(schema) ? schema : "lionworkforce";
+  } catch { return "lionworkforce"; }
+}
+const databaseSchema=configuredSchema();
 export const db = globalForDb.lionworkforcePool ?? new Pool({
   connectionString: process.env.DATABASE_URL,
   max: Number(process.env.DB_POOL_SIZE ?? 10),
+  options:`-c search_path=${databaseSchema},public`,
 });
 if (process.env.NODE_ENV !== "production") globalForDb.lionworkforcePool = db;
 
