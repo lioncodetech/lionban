@@ -30,7 +30,12 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     const result=await transaction(async client=>{
       const updated=await client.query(`UPDATE lwf_tickets SET deploy_status='completed',deploy_updated_at=now(),updated_at=now()
         WHERE id=$1 AND deploy_status='in_progress' RETURNING id`,[ticketId]);
-      if (updated.rowCount) await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'deploy.completed','Deploy confirmado como concluído pelo usuário')",[ticketId]);
+      if (updated.rowCount) {
+        await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'deploy.completed','Deploy confirmado como concluído pelo usuário')",[ticketId]);
+        await client.query(`UPDATE lwf_worker_control
+          SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
+          WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[ticketId]);
+      }
       return updated.rowCount;
     });
     return result?NextResponse.json({ok:true}):NextResponse.json({error:"Este chamado não possui deploy em curso"},{status:409});

@@ -14,6 +14,7 @@ const settingsVersion = "009_lb_settings_retention_and_environment";
 const workforceRenameVersion = "010_lwf_rename";
 const workforceSchemaVersion = "011_lwf_schema";
 const shadowCleanupVersion = "012_lwf_shadow_cleanup";
+const deployMonitoringVersion = "013_lwf_deploy_monitoring";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -220,6 +221,17 @@ async function migrate() {
       await client.query("DROP TYPE IF EXISTS lionworkforce.lb_ticket_status CASCADE");
       await client.query("DROP TYPE IF EXISTS lionworkforce.lb_priority CASCADE");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [shadowCleanupVersion]);
+      await client.query("COMMIT");
+    }
+    const deployMonitoringApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [deployMonitoringVersion]);
+    if (!deployMonitoringApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS deploy_verification_url text");
+      await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS deploy_timeout_minutes smallint NOT NULL DEFAULT 20 CHECK (deploy_timeout_minutes BETWEEN 1 AND 120)");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD COLUMN IF NOT EXISTS deploy_expected_commit text");
+      await client.query("ALTER TABLE lionworkforce.lwf_worker_control ADD COLUMN IF NOT EXISTS pause_reason text");
+      await client.query("ALTER TABLE lionworkforce.lwf_worker_control ADD COLUMN IF NOT EXISTS deploy_ticket_id bigint REFERENCES lionworkforce.lwf_tickets(id) ON DELETE SET NULL");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [deployMonitoringVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {

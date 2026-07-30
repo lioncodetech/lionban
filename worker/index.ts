@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
@@ -183,16 +183,49 @@ async function createPullRequest(job:Job, branch:string) {
   if (!response.ok) throw new Error(`GITHUB_PR_FAILED_${response.status}: ${(await response.text()).slice(0,1000)}`);
   return response.json() as Promise<{number:number; html_url:string}>;
 }
-async function triggerDeploy(job:Job) {
+const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+async function readDeployedCommit(url:string) {
+  const response=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(15000),cache:"no-store"});
+  if (!response.ok) return null;
+  const header=response.headers.get("x-commit-sha") ?? response.headers.get("x-version-commit");
+  if (header) return header.trim();
+  const body=await response.json().catch(()=>null) as Record<string,unknown>|null;
+  const value=body?.commit ?? body?.sha ?? body?.gitCommit ?? body?.version;
+  return typeof value==="string" ? value.trim() : null;
+}
+async function triggerDeploy(job:Job, expectedCommit:string) {
   if (!job.deploy_webhook_url) throw new Error("DEPLOY_WEBHOOK_NOT_CONFIGURED");
-  await db.query("UPDATE lwf_tickets SET deploy_status='in_progress',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+  await db.query("UPDATE lwf_tickets SET deploy_status='in_progress',deploy_expected_commit=$1,deploy_updated_at=now() WHERE id=$2",[expectedCommit,job.ticket_id]);
+  const pause=await db.query(`UPDATE lwf_worker_control
+    SET queue_paused=true,pause_reason='deploy',deploy_ticket_id=$1,updated_at=now()
+    WHERE singleton=true AND queue_paused=false RETURNING singleton`,[job.ticket_id]);
+  const ownsPause=Boolean(pause.rowCount);
   await event(job,"deploy.started","Deploy solicitado ao EasyPanel; aguardando confirmação de conclusão");
   try {
     const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
     if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
     await event(job,"deploy.triggered","EasyPanel aceitou a solicitação de deploy");
+    if (!job.deploy_verification_url) {
+      await event(job,"deploy.verification_required","Configure a URL de verificação para liberar a fila automaticamente");
+      return;
+    }
+    const deadline=Date.now()+(job.deploy_timeout_minutes || 20)*60_000;
+    while (Date.now()<deadline) {
+      await assertNotCancelled(job);
+      const deployed=await readDeployedCommit(job.deploy_verification_url).catch(()=>null);
+      if (deployed && (expectedCommit.startsWith(deployed) || deployed.startsWith(expectedCommit))) {
+        await db.query("UPDATE lwf_tickets SET deploy_status='completed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+        await event(job,"deploy.completed","Nova versão confirmada no ambiente de produção",{commit:expectedCommit});
+        if (ownsPause) await db.query(`UPDATE lwf_worker_control SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
+          WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[job.ticket_id]);
+        return;
+      }
+      await wait(10_000);
+    }
+    throw new Error("DEPLOY_VERIFICATION_TIMEOUT");
   } catch(error) {
     await db.query("UPDATE lwf_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+    await event(job,"deploy.failed","Não foi possível confirmar a conclusão do deploy",{error:error instanceof Error?error.message:String(error)});
     throw error;
   }
 }
@@ -266,7 +299,7 @@ async function claim():Promise<Job|null> {
     }
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
-      t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id
+      t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
         AND NOT EXISTS (
@@ -340,7 +373,8 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
     await git(["push","origin",safe(job.release_tag)],repo);
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
-  if (job.auto_deploy) await triggerDeploy(job);
+  const mergedCommit=(await git(["rev-parse","HEAD"],repo)).trim();
+  if (job.auto_deploy) await triggerDeploy(job,mergedCommit);
   await db.query("UPDATE lwf_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
   await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
   await event(job,"merge.completed","Correção validada e integrada à branch principal");

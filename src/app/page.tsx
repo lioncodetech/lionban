@@ -6,6 +6,7 @@ import Image from "next/image";
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = {
   id:string; name:string; repo:string; language:string; branch:string; color:string; deployConfigured:boolean;
+  deployVerificationConfigured:boolean; deployTimeoutMinutes:number;
   installCommand:string; testCommand:string; lintCommand:string; buildCommand:string; testEnvironmentKeys:string[]; testDatabaseSchema:string;
 };
 type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string; deployStatus:string };
@@ -38,6 +39,7 @@ const eventLabels:Record<string,string> = {
   "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",
   "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
   "tag.created":"Versão criada", "deploy.started":"Deploy iniciado", "deploy.triggered":"Solicitação de deploy aceita", "deploy.completed":"Deploy concluído", "patch.prepared":"Correção preparada",
+  "deploy.failed":"Falha ao confirmar deploy", "deploy.verification_required":"Verificação automática não configurada",
   "dependencies.installing":"Instalando dependências", "dependencies.installed":"Dependências instaladas",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
   "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
@@ -86,6 +88,8 @@ export default function Home() {
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [configApp, setConfigApp] = useState<App | null>(null);
   const [deployWebhookUrl, setDeployWebhookUrl] = useState("");
+  const [deployVerificationUrl,setDeployVerificationUrl]=useState("");
+  const [deployTimeoutMinutes,setDeployTimeoutMinutes]=useState(20);
   const [removeDeployWebhook, setRemoveDeployWebhook] = useState(false);
   const [installCommand, setInstallCommand] = useState("");
   const [testCommand, setTestCommand] = useState("");
@@ -108,7 +112,7 @@ export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? {
     id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
-    deployConfigured:false,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],testDatabaseSchema:"",
+    deployConfigured:false,deployVerificationConfigured:false,deployTimeoutMinutes:20,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],testDatabaseSchema:"",
   };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -130,6 +134,7 @@ export default function Home() {
         setApplicationList(appRows.map((row: Record<string, unknown>) => ({
           id:String(row.id), name:String(row.name), repo:String(row.full_name),
           language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
+          deployVerificationConfigured:Boolean(row.deploy_verification_configured),deployTimeoutMinutes:Number(row.deploy_timeout_minutes ?? 20),
           installCommand:String(row.install_command ?? ""),testCommand:String(row.test_command ?? ""),
           lintCommand:String(row.lint_command ?? ""),buildCommand:String(row.build_command ?? ""),
           testEnvironmentKeys:Array.isArray(row.test_environment_keys)?row.test_environment_keys.map(String):[],
@@ -404,6 +409,7 @@ export default function Home() {
     const imported: App = {
       id: result.id, name: result.name, repo: result.full_name,
       language: result.language ?? "Não detectada", branch: result.default_branch, color:"#236b50", deployConfigured:Boolean(result.deploy_configured),
+      deployVerificationConfigured:Boolean(result.deploy_verification_configured),deployTimeoutMinutes:Number(result.deploy_timeout_minutes ?? 20),
       installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
       testEnvironmentKeys:[],testDatabaseSchema:"",
@@ -419,6 +425,8 @@ export default function Home() {
     const response=await fetch(`/api/applications/${configApp.id}`,{
       method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({
         deployWebhookUrl:removeDeployWebhook ? null : (deployWebhookUrl.trim() || undefined),
+        deployVerificationUrl:deployVerificationUrl.trim() || undefined,
+        deployTimeoutMinutes,
         installCommand:installCommand.trim(),testCommand:testCommand.trim(),
         lintCommand:lintCommand.trim(),buildCommand:buildCommand.trim(),
         testEnvironment:testEnvironmentText.trim()?Object.fromEntries(testEnvironmentText.split(/\r?\n/).filter(line=>line.includes("=")).map(line=>{
@@ -433,6 +441,7 @@ export default function Home() {
     }
     setApplicationList(current => current.map(item => item.id === configApp.id ? {
       ...item,deployConfigured:Boolean(result.deploy_configured),
+      deployVerificationConfigured:Boolean(result.deploy_verification_configured),deployTimeoutMinutes:Number(result.deploy_timeout_minutes ?? 20),
       installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
       testEnvironmentKeys:Array.isArray(result.test_environment_keys)?result.test_environment_keys.map(String):item.testEnvironmentKeys,
@@ -440,6 +449,7 @@ export default function Home() {
     } : item));
     setConfigApp(current=>current?{
       ...current,deployConfigured:Boolean(result.deploy_configured),
+      deployVerificationConfigured:Boolean(result.deploy_verification_configured),deployTimeoutMinutes:Number(result.deploy_timeout_minutes ?? 20),
       testEnvironmentKeys:Array.isArray(result.test_environment_keys)?result.test_environment_keys.map(String):current.testEnvironmentKeys,
       testDatabaseSchema:String(result.test_database_schema ?? ""),
     }:current);
@@ -509,7 +519,7 @@ export default function Home() {
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
         <dl><div><dt>Linguagem</dt><dd>{a.language}</dd></div><div><dt>Branch principal</dt><dd>{a.branch}</dd></div></dl>
         <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button onClick={() => {
-          setConfigApp(a); setDeployWebhookUrl(""); setRemoveDeployWebhook(false);
+          setConfigApp(a); setDeployWebhookUrl(""); setDeployVerificationUrl(""); setDeployTimeoutMinutes(a.deployTimeoutMinutes); setRemoveDeployWebhook(false);
           setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
           setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
           setTestEnvironmentText(""); setConfigMessage("");
@@ -553,6 +563,8 @@ export default function Home() {
       <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>{setTestEnvironmentText(e.target.value);setConfigMessage("");}} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}${configApp.testDatabaseSchema?` — schema atual: ${configApp.testDatabaseSchema}`:" — nenhum parâmetro schema detectado"}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
       {configMessage&&<div className={configMessage.startsWith("Configuração salva")?"config-success":"import-error"}>{configMessage}</div>}
       <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
+      <label>URL HTTPS de verificação da versão<input type="url" value={deployVerificationUrl} onChange={e=>setDeployVerificationUrl(e.target.value)} placeholder={configApp.deployVerificationConfigured?"Já configurada — cole outra para substituir":"https://seu-app.com/api/version"} /><small>Deve retornar JSON com commit/sha ou o cabeçalho X-Commit-Sha. É usada para confirmar o deploy e liberar a fila.</small></label>
+      <label>Tempo limite do deploy (minutos)<input type="number" min={1} max={120} value={deployTimeoutMinutes} onChange={e=>setDeployTimeoutMinutes(Number(e.target.value))} /></label>
       <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Fechar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setRemoveDeployWebhook(value=>!value)}>{removeDeployWebhook?"Manter webhook":"Remover webhook"}</button>}<button className="primary" disabled={configSaving}>{configSaving?"Salvando...":"Salvar"}</button></footer>
     </form></div>}
 
@@ -574,7 +586,7 @@ export default function Home() {
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
-      {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao iniciar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"O webhook foi aceito. Confirme quando o histórico do EasyPanel mostrar o deploy concluído.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
+      {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao confirmar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"A fila está pausada enquanto o LionWorkForce procura o novo commit na URL de verificação. A confirmação manual continua disponível como alternativa.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
       {!ticketDetails && !ticketDetailsError && <div className="detail-loading">Carregando atividade…</div>}
       {ticketDetailsError&&<div className="import-error">{ticketDetailsError}</div>}
       {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}

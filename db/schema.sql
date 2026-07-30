@@ -23,6 +23,8 @@ CREATE TABLE lb_applications (
   lint_command text,
   build_command text,
   deploy_webhook_url text,
+  deploy_verification_url text,
+  deploy_timeout_minutes smallint NOT NULL DEFAULT 20 CHECK (deploy_timeout_minutes BETWEEN 1 AND 120),
   test_environment jsonb NOT NULL DEFAULT '{}',
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -48,6 +50,7 @@ CREATE TABLE lb_tickets (
   archived_at timestamptz,
   deploy_status text NOT NULL DEFAULT 'not_requested',
   deploy_updated_at timestamptz,
+  deploy_expected_commit text,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -105,6 +108,8 @@ CREATE TABLE lb_worker_heartbeats (
 CREATE TABLE lb_worker_control (
   singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
   queue_paused boolean NOT NULL DEFAULT false,
+  pause_reason text,
+  deploy_ticket_id bigint REFERENCES lb_tickets(id) ON DELETE SET NULL,
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO lb_worker_control(singleton) VALUES(true);

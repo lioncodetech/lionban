@@ -11,7 +11,7 @@ export async function GET() {
       }>(`SELECT codex_authenticated,status_message,last_seen,
         last_seen > now() - interval '35 seconds' worker_online
         FROM lwf_worker_heartbeats ORDER BY last_seen DESC LIMIT 1`),
-      query<{queue_paused:boolean}>("SELECT queue_paused FROM lwf_worker_control WHERE singleton=true"),
+      query<{queue_paused:boolean;pause_reason:string|null}>("SELECT queue_paused,pause_reason FROM lwf_worker_control WHERE singleton=true"),
     ]);
     const worker=result.rows[0];
     const queuePaused=control.rows[0]?.queue_paused ?? false;
@@ -20,7 +20,9 @@ export async function GET() {
       message:"Nenhum worker registrou atividade.",
     });
     const message=queuePaused
-      ? "Fila pausada. A execução atual pode terminar; novos chamados não serão iniciados."
+      ? control.rows[0]?.pause_reason==="deploy"
+        ? "Fila pausada automaticamente enquanto o deploy é verificado."
+        : "Fila pausada. A execução atual pode terminar; novos chamados não serão iniciados."
       : !worker.worker_online
         ? "O worker parou de enviar sinais."
         : worker.codex_authenticated
@@ -44,7 +46,7 @@ export async function PATCH(request:Request) {
     return NextResponse.json({error:"Estado de pausa inválido"},{status:400});
   }
   const result=await query<{queue_paused:boolean}>(
-    "UPDATE lwf_worker_control SET queue_paused=$1,updated_at=now() WHERE singleton=true RETURNING queue_paused",
+    "UPDATE lwf_worker_control SET queue_paused=$1,pause_reason=CASE WHEN $1 THEN 'manual' ELSE NULL END,deploy_ticket_id=NULL,updated_at=now() WHERE singleton=true RETURNING queue_paused",
     [body.paused],
   );
   if (!result.rowCount) {
