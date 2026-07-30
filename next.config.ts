@@ -1,13 +1,8 @@
-import { execFileSync } from "node:child_process";
 import type { NextConfig } from "next";
-
-const commitSha = execFileSync("git", ["rev-parse", "HEAD"], {
-  encoding: "utf8",
-}).trim();
 
 const nextConfig: NextConfig = {
   env: {
-    APP_COMMIT_SHA: commitSha,
+    APP_COMMIT_SHA: process.env.APP_COMMIT_SHA ?? "unknown",
   },
 };
 

@@ -1,4 +1,6 @@
 FROM node:24-bookworm-slim AS base
+ARG GIT_SHA=unknown
+ENV APP_COMMIT_SHA=$GIT_SHA
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git \
