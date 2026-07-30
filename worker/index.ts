@@ -17,7 +17,10 @@ function git(args:string[], cwd:string) {
 }
 function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}, timeoutMs=Math.max(60_000,Number(process.env.COMMAND_TIMEOUT_MS ?? 10*60*1000))) {
   return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env:{...process.env,...env}, shell:false, windowsHide:true });
+    const child = spawn(command, args, {
+      cwd, env:{...process.env,CI:"true",TERM:"dumb",NO_COLOR:"1",...env},
+      shell:false, windowsHide:true, stdio:["ignore","pipe","pipe"],
+    });
     let output=""; child.stdout.on("data", d => output += d); child.stderr.on("data", d => output += d);
     let timedOut=false;
     const timeout=setTimeout(()=>{ timedOut=true; child.kill("SIGTERM"); setTimeout(()=>child.kill("SIGKILL"),5000).unref(); },timeoutMs);
@@ -33,7 +36,10 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   const activityTimeoutMs=Math.max(60_000,Number(process.env.CODEX_ACTIVITY_TIMEOUT_MS ?? 8*60*1000));
   const startupTimeoutMs=Math.max(30_000,Number(process.env.CODEX_START_TIMEOUT_MS ?? 90_000));
   return new Promise<string>((resolve,reject) => {
-    const child=spawn(command,args,{cwd,env:process.env,shell:false,windowsHide:true});
+    const child=spawn(command,args,{
+      cwd,env:{...process.env,CI:"true",TERM:"dumb",NO_COLOR:"1"},
+      shell:false,windowsHide:true,stdio:["ignore","pipe","pipe"],
+    });
     let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Iniciando o Codex"; let lastActivityAt=Date.now(); let receivedStructuredEvent=false;
     const transcript:Array<{at:string;type:string;text:string}>=[];
     const recordActivity=(type:string,text:string) => {
