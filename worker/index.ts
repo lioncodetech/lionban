@@ -40,7 +40,7 @@ function git(args:string[], cwd:string) {
 function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}, timeoutMs=Math.max(60_000,Number(process.env.COMMAND_TIMEOUT_MS ?? 10*60*1000))) {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
-      cwd, env:{...process.env,CI:"true",TERM:"dumb",NO_COLOR:"1",...env},
+      cwd, env:{...codexEnvironment(),...env},
       shell:false, windowsHide:true, stdio:["ignore","pipe","pipe"],
     });
     let output=""; child.stdout.on("data", d => output += d); child.stderr.on("data", d => output += d);
@@ -236,6 +236,13 @@ async function processJob(job:Job) {
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     await assertNotCancelled(job);
+    if (job.install_command) {
+      await event(job,"dependencies.installing","Instalando dependências configuradas da aplicação",{command:job.install_command});
+      const [bin,...args]=job.install_command.split(/\s+/);
+      await run(bin,args,repo);
+      await event(job,"dependencies.installed","Dependências da aplicação instaladas");
+      await assertNotCancelled(job);
+    }
     const artifactRows = await db.query<{name:string; content:Buffer}>(
       "SELECT name,content FROM lb_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
       [job.ticket_id],
