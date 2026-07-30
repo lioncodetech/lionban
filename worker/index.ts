@@ -298,6 +298,8 @@ async function processJob(job:Job) {
     await git(["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
     const base=(await git(["rev-parse","HEAD"],repo)).trim();
     await git(["checkout","-b",branch],repo);
+    await git(["config","user.name",process.env.GIT_AUTHOR_NAME?.trim() || "LionBan Bot"],repo);
+    await git(["config","user.email",process.env.GIT_AUTHOR_EMAIL?.trim() || "lionban@users.noreply.github.com"],repo);
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     await assertNotCancelled(job);
