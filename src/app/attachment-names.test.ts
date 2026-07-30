@@ -11,4 +11,9 @@ describe("attachmentName", () => {
     expect(attachmentName("erro.png", 0, 2)).toBe("erro1.png");
     expect(attachmentName("captura.final.webp", 1, 2)).toBe("captura.final2.webp");
   });
+
+  it("não repete o sufixo de imagens recuperadas ao duplicar um chamado", () => {
+    expect(attachmentName("erro1.png", 0, 2)).toBe("erro1.png");
+    expect(attachmentName("captura.final2.webp", 1, 2)).toBe("captura.final2.webp");
+  });
 });
