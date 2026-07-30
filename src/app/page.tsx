@@ -8,7 +8,7 @@ type App = {
   id:string; name:string; repo:string; language:string; branch:string; color:string; deployConfigured:boolean;
   installCommand:string; testCommand:string; lintCommand:string; buildCommand:string;
 };
-type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
+type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
 type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
@@ -64,6 +64,7 @@ export default function Home() {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Ticket["priority"]>("Média");
+  const [queuePriority, setQueuePriority] = useState(5);
   const [importModal, setImportModal] = useState(false);
   const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
   const [githubQuery, setGithubQuery] = useState("");
@@ -110,7 +111,7 @@ export default function Home() {
         })));
         setTickets(ticketRows.map((row: Record<string, unknown>) => ({
           id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
-          priority:priorityFromApi[String(row.priority)] ?? "Média", status:statusFromApi[String(row.status)] ?? "Falhou",
+          priority:priorityFromApi[String(row.priority)] ?? "Média",queuePriority:Number(row.queue_priority ?? 5),status:statusFromApi[String(row.status)] ?? "Falhou",
           age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),
         })));
       } catch {
@@ -205,7 +206,7 @@ export default function Home() {
     if (!detail) return;
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]);
-    setAppId(detail.appId); setTitle(`${detail.title} (cópia)`); setDescription(detail.description); setPriority(detail.priority);
+    setAppId(detail.appId); setTitle(`${detail.title} (cópia)`); setDescription(detail.description); setPriority(detail.priority); setQueuePriority(detail.queuePriority);
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
@@ -239,7 +240,7 @@ export default function Home() {
 
   function openNewTicket() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
-    setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média");
+    setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
     setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setDataError("");
     setModal(true);
@@ -256,13 +257,13 @@ export default function Home() {
     }));
     const response = await fetch("/api/tickets", {
       method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ applicationId:appId, title, description, priority:priorityToApi[priority], attachments:encodedAttachments, autoCommit, autoPush, autoPullRequest, autoDeploy, createTag, releaseTag:createTag?releaseTag:undefined }),
+      body:JSON.stringify({ applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:undefined }),
     });
     if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
     const created = await response.json();
-    setTickets(v => [{ id:Number(created.id), appId:String(created.application_id), title:String(created.title), description:String(created.description), priority, status:"Aberto", age:"agora" }, ...v]);
+    setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora" }, ...v]);
     attachments.forEach(item => URL.revokeObjectURL(item.preview));
-    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]); setDuplicating(false);
+    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
     setCreateTag(false); setReleaseTag(""); setRepoTags([]);
   }
@@ -372,7 +373,7 @@ export default function Home() {
         {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className={`column ${draggedTicket !== null ? "drop-enabled" : ""}`} key={status} onDragOver={event => event.preventDefault()} onDrop={() => { if (draggedTicket !== null) moveTicket(draggedTicket, status); setDraggedTicket(null); }}>
           <header><i className={`status s${statuses.indexOf(status)}`} /><strong>{status}</strong><b>{visible.filter(t => t.status === status).length}</b></header>
           {visible.filter(t => t.status === status).map(t => <button className={`ticket ${draggedTicket === t.id ? "dragging" : ""}`} draggable key={t.id} onDragStart={event => { event.dataTransfer.effectAllowed = "move"; setDraggedTicket(t.id); }} onDragEnd={() => setDraggedTicket(null)} onClick={() => openTicket(t)}>
-            <div className="ticket-top"><span className={`p-${t.priority}`}>{t.priority}</span><small>#{t.id}</small></div>
+            <div className="ticket-top"><span className={`p-${t.priority}`}>{t.priority}</span><b className="queue-priority">Fila {t.queuePriority}</b><small>#{t.id}</small></div>
             <h3>{t.title}</h3><p>{t.description}</p>
             <div className="repo"><i style={{ background: app(t.appId).color }}>{app(t.appId).name[0]}</i><div><strong>{app(t.appId).name}</strong><small>{app(t.appId).repo}</small></div></div>
             <footer><span>⑂ {app(t.appId).branch}</span><span>{t.age}</span></footer>
@@ -399,7 +400,7 @@ export default function Home() {
       </div>
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
-      <div className="row"><label>Prioridade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
+      <div className="row ticket-fields"><label>Criticidade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><label>Ordem da fila<select value={queuePriority} onChange={e=>setQueuePriority(Number(e.target.value))}>{Array.from({length:10},(_,index)=>index+1).map(value=><option key={value} value={value}>{value} — {value===1?"primeiro":value===10?"último":"prioridade da fila"}</option>)}</select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
       <fieldset className="automation-options"><legend>Automação após corrigir e testar</legend>
         <label><input type="checkbox" checked={autoCommit} onChange={e => { setAutoCommit(e.target.checked); if (!e.target.checked) { setAutoPush(false); setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Commit automático</strong><small>Criar um commit com a correção</small></span></label>
         <label><input type="checkbox" checked={autoPush} onChange={e => { setAutoPush(e.target.checked); if (e.target.checked) setAutoCommit(true); else { setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Push automático</strong><small>Enviar a branch lionban/chamado-ID</small></span></label>

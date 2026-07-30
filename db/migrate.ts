@@ -8,6 +8,7 @@ const heartbeatVersion = "003_lb_worker_heartbeat";
 const automationOptionsVersion = "004_lb_automation_options";
 const releaseTagsVersion = "005_lb_release_tags";
 const approvalResumeVersion = "006_lb_approval_resume";
+const queuePriorityVersion = "007_lb_queue_priority";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -71,6 +72,16 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [approvalResumeVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${approvalResumeVersion} aplicada`);
+    }
+    const queuePriorityApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [queuePriorityVersion]);
+    if (!queuePriorityApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS queue_priority smallint NOT NULL DEFAULT 5 CHECK (queue_priority BETWEEN 1 AND 10)");
+      await client.query("DROP INDEX IF EXISTS lb_one_active_execution_per_app");
+      await client.query("CREATE UNIQUE INDEX lb_one_active_execution_per_app ON lb_executions(application_id) WHERE state='running'");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [queuePriorityVersion]);
+      await client.query("COMMIT");
+      console.log(`Migração ${queuePriorityVersion} aplicada`);
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

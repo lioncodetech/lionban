@@ -113,12 +113,10 @@ export async function POST(request:Request, context:{params:Promise<{id:string}>
       const source=await client.query(`SELECT * FROM lb_tickets WHERE id=$1 FOR SHARE`,[ticketId]);
       if (!source.rowCount) return null;
       const ticket=source.rows[0];
-      const active=await client.query("SELECT 1 FROM lb_executions WHERE application_id=$1 AND state IN ('queued','running') LIMIT 1",[ticket.application_id]);
-      if (active.rowCount) throw new Error("APPLICATION_BUSY");
       const created=await client.query(`INSERT INTO lb_tickets(
-        application_id,title,description,priority,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING *`,[
-        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.auto_commit,ticket.auto_push,
+        application_id,title,description,priority,queue_priority,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
+        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.queue_priority,ticket.auto_commit,ticket.auto_push,
         ticket.auto_pull_request,ticket.auto_deploy,ticket.create_tag,ticket.release_tag,
       ]);
       await client.query("INSERT INTO lb_executions(ticket_id,application_id) VALUES($1,$2)",[created.rows[0].id,ticket.application_id]);
@@ -126,12 +124,7 @@ export async function POST(request:Request, context:{params:Promise<{id:string}>
       return created.rows[0];
     });
     return cloned?NextResponse.json(cloned,{status:201}):NextResponse.json({error:"Chamado não encontrado"},{status:404});
-  } catch(error) {
-    if (error instanceof Error && error.message==="APPLICATION_BUSY") {
-      return NextResponse.json({error:"Esta aplicação já possui uma execução ativa. Aguarde ou cancele antes de duplicar."},{status:409});
-    }
-    throw error;
-  }
+  } catch(error) { throw error; }
 }
 
 export async function DELETE(_request:Request, context:{params:Promise<{id:string}>}) {

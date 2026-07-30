@@ -32,6 +32,7 @@ CREATE TABLE lb_tickets (
   title text NOT NULL CHECK (length(title) BETWEEN 3 AND 160),
   description text NOT NULL CHECK (length(description) >= 10),
   priority lb_priority NOT NULL DEFAULT 'medium',
+  queue_priority smallint NOT NULL DEFAULT 5 CHECK (queue_priority BETWEEN 1 AND 10),
   status lb_ticket_status NOT NULL DEFAULT 'open',
   branch_name text,
   base_commit text,
@@ -61,7 +62,7 @@ CREATE TABLE lb_executions (
   UNIQUE(ticket_id, attempt)
 );
 CREATE UNIQUE INDEX lb_one_active_execution_per_app ON lb_executions(application_id)
-  WHERE state IN ('queued','running');
+  WHERE state='running';
 CREATE TABLE lb_events (
   id bigserial PRIMARY KEY,
   ticket_id bigint NOT NULL REFERENCES lb_tickets(id) ON DELETE CASCADE,

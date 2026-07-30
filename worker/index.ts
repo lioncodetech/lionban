@@ -212,7 +212,13 @@ async function claim():Promise<Job|null> {
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
-      WHERE e.state='queued' AND a.enabled=true ORDER BY t.created_at FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
+      WHERE e.state='queued' AND a.enabled=true
+        AND NOT EXISTS (
+          SELECT 1 FROM lb_executions active
+          WHERE active.application_id=e.application_id AND active.state='running'
+        )
+      ORDER BY t.queue_priority ASC,t.created_at ASC,e.attempt ASC
+      FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
     const job=result.rows[0];
     await client.query("UPDATE lb_executions SET state='running',worker_id=$1,started_at=now() WHERE id=$2",[workerId,job.execution_id]);
