@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -186,6 +186,34 @@ async function finishApprovedPatchOnly(job:Job, summary:string) {
   await db.query("UPDATE lb_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
   await event(job,"approval.completed",summary);
 }
+async function synchronizePackageVersion(job:Job, repo:string) {
+  if (!job.create_tag || !job.release_tag) return;
+  const packagePath=path.join(repo,"package.json");
+  let packageJson:{version?:string};
+  try {
+    packageJson=JSON.parse(await readFile(packagePath,"utf8")) as {version?:string};
+  } catch(error) {
+    if (error instanceof Error && "code" in error && error.code==="ENOENT") {
+      await event(job,"version.skipped","Tag solicitada, mas o repositório não possui package.json",{tag:job.release_tag});
+      return;
+    }
+    throw error;
+  }
+  const version=job.release_tag.replace(/^v/,"");
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new Error("RELEASE_TAG_NOT_VALID_SEMVER");
+  }
+  if (packageJson.version!==version) {
+    await run("npm",["version",version,"--no-git-tag-version","--allow-same-version","--ignore-scripts"],repo,{
+      NODE_ENV:"development",NPM_CONFIG_PRODUCTION:"false",
+    });
+  }
+  const updated=JSON.parse(await readFile(packagePath,"utf8")) as {version?:string};
+  if (updated.version!==version) throw new Error("PACKAGE_VERSION_NOT_SYNCHRONIZED");
+  await event(job,"version.updated",`Versão do package.json sincronizada com ${job.release_tag}`,{
+    previousVersion:packageJson.version ?? null,version,tag:job.release_tag,
+  });
+}
 async function assertNotCancelled(job:Job) {
   const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lb_tickets WHERE id=$1",[job.ticket_id]);
   if (result.rows[0]?.cancellation_requested) throw new Error("EXECUTION_CANCELLED");
@@ -252,6 +280,7 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
     await requestApproval(job,"Revise o patch preservado antes de concluir o chamado");
     return;
   }
+  await synchronizePackageVersion(job,repo);
   await git(["add","-A"],repo);
   await git(["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
   await event(job,"commit.created","Commit automático criado");

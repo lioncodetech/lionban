@@ -40,6 +40,7 @@ const eventLabels:Record<string,string> = {
   "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
   "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
   "approval.completed":"Aprovação concluída",
+  "version.updated":"Versão sincronizada com a tag", "version.skipped":"Sincronização de versão ignorada",
 };
 const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
   events:(result.events as TicketEvent[] | undefined) ?? [],

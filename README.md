@@ -15,4 +15,4 @@ Kanban pessoal para registrar bugs e delegar correções ao Codex, sempre no rep
 4. Monte um volume persistente em `/root/.codex` no worker e autentique o Codex uma vez pelo terminal do EasyPanel.
 5. Exponha somente o serviço web por HTTPS. PostgreSQL e worker permanecem privados.
 
-O worker valida o ID do repositório, cria `lionban/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Quando não há teste confiável, nenhuma integração ou implantação automática é feita.
+O worker valida o ID do repositório, cria `lionban/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Ao criar uma tag em um projeto Node.js, o worker sincroniza antes a versão do `package.json` (e do lockfile atualizado pelo npm), inclui a mudança no commit e somente depois envia a tag.
