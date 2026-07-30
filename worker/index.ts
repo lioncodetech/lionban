@@ -298,7 +298,7 @@ async function processJob(job:Job) {
     if (job.install_command) {
       await event(job,"dependencies.installing","Instalando dependências configuradas da aplicação",{command:job.install_command});
       const [bin,...args]=job.install_command.split(/\s+/);
-      await run(bin,args,repo);
+      await run(bin,args,repo,{NODE_ENV:"development",NPM_CONFIG_PRODUCTION:"false",NPM_CONFIG_INCLUDE:"dev"});
       await event(job,"dependencies.installed","Dependências da aplicação instaladas");
       await assertNotCancelled(job);
     }
