@@ -1,6 +1,14 @@
 FROM node:24-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates && rm -rf /var/lib/apt/lists/* \
-  && npm install -g @openai/codex
+ARG RTK_VERSION=v0.42.4
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends git curl ca-certificates \
+  && curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_VERSION}/install.sh" -o /tmp/install-rtk.sh \
+  && RTK_INSTALL_DIR=/usr/local/bin RTK_VERSION="${RTK_VERSION}" sh /tmp/install-rtk.sh \
+  && rtk --version \
+  && rtk gain \
+  && npm install -g @openai/codex \
+  && rm -f /tmp/install-rtk.sh \
+  && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
