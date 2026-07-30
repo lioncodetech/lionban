@@ -27,7 +27,7 @@ export async function PATCH(request:Request, context:{ params:Promise<{ id:strin
     return NextResponse.json({ error:"Configuração inválida" }, { status:400 });
   }
   const result = await query(
-    `UPDATE lb_applications SET
+    `UPDATE lwf_applications SET
       deploy_webhook_url=CASE WHEN $1::boolean THEN NULLIF($2,'') ELSE deploy_webhook_url END,
       install_command=NULLIF($3,''),test_command=NULLIF($4,''),
       lint_command=NULLIF($5,''),build_command=NULLIF($6,''),
@@ -35,7 +35,8 @@ export async function PATCH(request:Request, context:{ params:Promise<{ id:strin
      WHERE id=$9
      RETURNING id,install_command,test_command,lint_command,build_command,
        deploy_webhook_url IS NOT NULL deploy_configured,
-       COALESCE(ARRAY(SELECT jsonb_object_keys(test_environment)),ARRAY[]::text[]) test_environment_keys`,
+       COALESCE(ARRAY(SELECT jsonb_object_keys(test_environment)),ARRAY[]::text[]) test_environment_keys,
+       substring(test_environment->>'DATABASE_URL' from '[?&]schema=([^&]+)') test_database_schema`,
     [
       parsed.data.deployWebhookUrl !== undefined,
       parsed.data.deployWebhookUrl ?? "",

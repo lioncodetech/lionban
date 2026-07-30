@@ -24,3 +24,4 @@
 .settings-panel label small,.config-modal label small{display:block;color:var(--muted);margin-top:6px}
 .deploy-panel{margin:18px 0;padding:18px;border-radius:16px;border:1px solid #d9e3dd;background:#f6faf8}
 .deploy-panel h4{margin-top:0}.deploy-in_progress{border-left:4px solid #dfa329}.deploy-completed{border-left:4px solid #2b9b72}.deploy-failed{border-left:4px solid #cf4b43}
+.config-success{padding:11px 14px;border-radius:10px;background:#e8f6ef;color:#176445;font-weight:700;font-size:13px}
