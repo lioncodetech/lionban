@@ -297,16 +297,15 @@ async function claim():Promise<Job|null> {
       await client.query("ROLLBACK");
       return null;
     }
-    const active=await client.query("SELECT 1 FROM lwf_executions WHERE state='running' LIMIT 1");
-    if (active.rowCount) {
-      await client.query("ROLLBACK");
-      return null;
-    }
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
+        AND NOT EXISTS (
+          SELECT 1 FROM lwf_executions active
+          WHERE active.application_id=e.application_id AND active.state='running'
+        )
       ORDER BY t.queue_priority ASC,t.created_at ASC,e.attempt ASC
       FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
@@ -576,6 +575,24 @@ async function main() {
   retentionTimer.unref();
   const recoveryTimer=setInterval(()=>recoverInterruptedJobs().catch(error=>console.error("recovery:",error)),30*1000);
   recoveryTimer.unref();
-  for (;;) { const job=await claim(); if (job) await processJob(job); else await new Promise(r=>setTimeout(r,3000)); }
+  const configuredConcurrency=Number(process.env.WORKER_MAX_CONCURRENCY ?? 4);
+  const maxConcurrency=Number.isInteger(configuredConcurrency)&&configuredConcurrency>0
+    ? Math.min(configuredConcurrency,10)
+    : 4;
+  const running=new Set<Promise<void>>();
+  for (;;) {
+    let claimed=false;
+    while (running.size<maxConcurrency) {
+      const job=await claim();
+      if (!job) break;
+      claimed=true;
+      const task=processJob(job)
+        .catch(error=>console.error(`ticket ${job.ticket_id}:`,error))
+        .finally(()=>running.delete(task));
+      running.add(task);
+    }
+    if (running.size>=maxConcurrency) await Promise.race(running);
+    else if (!claimed) await new Promise(resolve=>setTimeout(resolve,3000));
+  }
 }
 main().catch(error => { console.error(error); process.exit(1); });
