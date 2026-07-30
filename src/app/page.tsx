@@ -2,6 +2,7 @@
 
 import { ClipboardEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
+import { AttachmentList, type Attachment } from "./attachment-list";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = {
@@ -11,8 +12,8 @@ type App = {
 };
 type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string; deployStatus:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
-type Attachment = { file: File; preview: string };
 type StoredAttachment = { name:string; mimeType:string; size:number; data:string };
+type PreviewImage = { name:string; src:string };
 type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
@@ -112,7 +113,7 @@ export default function Home() {
   const [duplicating, setDuplicating] = useState(false);
   const [editingTicketId,setEditingTicketId]=useState<number|null>(null);
   const [ticketImages,setTicketImages]=useState<StoredAttachment[]>([]);
-  const [previewImage,setPreviewImage]=useState<StoredAttachment|null>(null);
+  const [previewImage,setPreviewImage]=useState<PreviewImage|null>(null);
   const [submittingTicket,setSubmittingTicket]=useState(false);
   const [submitError,setSubmitError]=useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -594,7 +595,7 @@ export default function Home() {
         <label className={!appId || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={createTag} disabled={!appId || autoPullRequest} onChange={e => { setCreateTag(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Criar tag e ativar Action</strong><small>{autoPullRequest?"Disponível após integração, sem Pull Request":repoTags.length?`${repoTags.length} tag(s) encontrada(s)`:"Nenhuma tag encontrada; iniciar em v1.0.0"}</small></span></label>
       </fieldset>
       {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div><div className="recent-actions"><strong>Últimas Actions</strong>{repoActions.length?<ol>{repoActions.slice(0,5).map(action=><li key={action.id}><a href={action.html_url} target="_blank" rel="noreferrer">{action.display_title || action.name}</a><small>{action.conclusion ?? action.status} · {new Date(action.created_at).toLocaleString("pt-BR")}</small></li>)}</ol>:<small>Nenhuma execução recente encontrada.</small>}</div></div>}
-      {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
+      {attachments.length > 0 && <AttachmentList attachments={attachments} onPreview={item=>setPreviewImage({name:item.file.name,src:item.preview})} onRemove={removeImage} />}
       {submitError&&<div className="import-error">{submitError}</div>}
       <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={submittingTicket || !appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>{submittingTicket?"Salvando...":editingTicketId?"Salvar alterações":duplicating?"Criar cópia e enviar ao Codex →":"Criar e enviar ao Codex →"}</button></footer>
     </form></div>}
@@ -634,7 +635,7 @@ export default function Home() {
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section>
-      {ticketImages.length>0&&<section className="ticket-gallery"><h4>IMAGENS DO CHAMADO</h4><div>{ticketImages.map((image,index)=><button type="button" key={`${image.name}-${index}`} onClick={()=>setPreviewImage(image)}><Image src={`data:${image.mimeType};base64,${image.data}`} alt={image.name} width={180} height={120} unoptimized /><span>{image.name}</span></button>)}</div></section>}
+      {ticketImages.length>0&&<section className="ticket-gallery"><h4>IMAGENS DO CHAMADO</h4><div>{ticketImages.map((image,index)=><button type="button" key={`${image.name}-${index}`} onClick={()=>setPreviewImage({name:image.name,src:`data:${image.mimeType};base64,${image.data}`})} aria-label={`Ampliar ${image.name}`}><Image src={`data:${image.mimeType};base64,${image.data}`} alt="" width={180} height={120} unoptimized /><span>{image.name}</span></button>)}</div></section>}
       <h4>ATIVIDADE DO AGENTE</h4>
       {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao confirmar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"A fila está pausada enquanto o LionWorkForce procura o novo commit na URL de verificação. A confirmação manual continua disponível como alternativa.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
       {!ticketDetails && !ticketDetailsError && <div className="detail-loading">Carregando atividade…</div>}
@@ -645,6 +646,6 @@ export default function Home() {
       {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
       <footer className="ticket-actions"><div>{detail.status==="Aberto"&&<button className="approve-ticket" onClick={editTicket}>Editar chamado</button>}<button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar com imagens</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
     </aside></div>}
-    {previewImage&&<div className="overlay image-preview" onClick={()=>setPreviewImage(null)}><section onClick={event=>event.stopPropagation()}><header><strong>{previewImage.name}</strong><button onClick={()=>setPreviewImage(null)}>×</button></header><Image src={`data:${previewImage.mimeType};base64,${previewImage.data}`} alt={previewImage.name} width={1400} height={1000} unoptimized /></section></div>}
+    {previewImage&&<div className="overlay image-preview" onClick={()=>setPreviewImage(null)}><section role="dialog" aria-modal="true" aria-label={`Imagem ampliada: ${previewImage.name}`} onClick={event=>event.stopPropagation()}><header><strong>{previewImage.name}</strong><button type="button" onClick={()=>setPreviewImage(null)} aria-label="Fechar imagem ampliada">×</button></header><Image src={previewImage.src} alt={previewImage.name} width={1400} height={1000} unoptimized /></section></div>}
   </main>;
 }
