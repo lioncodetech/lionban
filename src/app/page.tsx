@@ -415,7 +415,7 @@ export default function Home() {
 
   return <main className="shell">
     <aside className="sidebar">
-      <div className="brand"><i>L</i><div><strong>LionBan</strong><span>Autonomous fixes</span></div></div>
+      <div className="brand"><i>L</i><div><strong>LionWorkForce</strong><span>Autonomous fixes</span></div></div>
       <nav>
         <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ <span>Quadro</span></button>
         <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{applicationList.length}</b></button>
@@ -476,7 +476,7 @@ export default function Home() {
       <p className={`severity-help severity-${priority}`}>{priority==="Alta"||priority==="Crítica"?"Esta criticidade exige sua aprovação antes de commit, push ou merge.":"Esta criticidade continua automaticamente após a correção; Pull Request ainda exige autorização no GitHub."}</p>
       <fieldset className="automation-options"><legend>Automação após corrigir e testar</legend>
         <label><input type="checkbox" checked={autoCommit} onChange={e => { setAutoCommit(e.target.checked); if (!e.target.checked) { setAutoPush(false); setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Commit automático</strong><small>Criar um commit com a correção</small></span></label>
-        <label><input type="checkbox" checked={autoPush} onChange={e => { setAutoPush(e.target.checked); if (e.target.checked) setAutoCommit(true); else { setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Push automático</strong><small>Enviar a branch lionban/chamado-ID</small></span></label>
+        <label><input type="checkbox" checked={autoPush} onChange={e => { setAutoPush(e.target.checked); if (e.target.checked) setAutoCommit(true); else { setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Push automático</strong><small>Enviar a branch lionworkforce/chamado-ID</small></span></label>
         <label><input type="checkbox" checked={autoPullRequest} onChange={e => { setAutoPullRequest(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); setAutoDeploy(false); } }} /><span><strong>Pull Request automático</strong><small>Criar PR em vez de integrar diretamente</small></span></label>
         <label className={!appId || !app(appId).deployConfigured || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={autoDeploy} disabled={!appId || !app(appId).deployConfigured || autoPullRequest} onChange={e => { setAutoDeploy(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Deploy automático</strong><small>{appId && app(appId).deployConfigured ? (autoPullRequest ? "Disponível somente sem Pull Request" : "Disparar webhook do EasyPanel após integrar") : "Configure o webhook na aplicação"}</small></span></label>
         <label className={!appId || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={createTag} disabled={!appId || autoPullRequest} onChange={e => { setCreateTag(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Criar tag e ativar Action</strong><small>{autoPullRequest?"Disponível após integração, sem Pull Request":repoTags.length?`${repoTags.length} tag(s) encontrada(s)`:"Nenhuma tag encontrada; iniciar em v1.0.0"}</small></span></label>

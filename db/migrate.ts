@@ -11,6 +11,7 @@ const approvalResumeVersion = "006_lb_approval_resume";
 const queuePriorityVersion = "007_lb_queue_priority";
 const workerPauseVersion = "008_lb_worker_pause";
 const settingsVersion = "009_lb_settings_retention_and_environment";
+const workforceRenameVersion = "010_lwf_rename";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -114,6 +115,55 @@ async function migrate() {
       await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS deploy_status text NOT NULL DEFAULT 'not_requested'");
       await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS deploy_updated_at timestamptz");
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [settingsVersion]);
+      await client.query("COMMIT");
+    }
+    const workforceRenameApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [workforceRenameVersion]);
+    if (!workforceRenameApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [workforceRenameVersion]);
+      await client.query("ALTER TABLE lb_repository_connections RENAME TO lwf_repository_connections");
+      await client.query("ALTER TABLE lb_applications RENAME TO lwf_applications");
+      await client.query("ALTER TABLE lb_tickets RENAME TO lwf_tickets");
+      await client.query("ALTER TABLE lb_executions RENAME TO lwf_executions");
+      await client.query("ALTER TABLE lb_events RENAME TO lwf_events");
+      await client.query("ALTER TABLE lb_approvals RENAME TO lwf_approvals");
+      await client.query("ALTER TABLE lb_artifacts RENAME TO lwf_artifacts");
+      await client.query("ALTER TABLE lb_worker_heartbeats RENAME TO lwf_worker_heartbeats");
+      await client.query("ALTER TABLE lb_worker_control RENAME TO lwf_worker_control");
+      await client.query("ALTER TABLE lb_settings RENAME TO lwf_settings");
+      await client.query("ALTER INDEX IF EXISTS lb_one_active_execution_per_app RENAME TO lwf_one_active_execution_per_app");
+      await client.query("ALTER SEQUENCE IF EXISTS lb_tickets_id_seq RENAME TO lwf_tickets_id_seq");
+      await client.query("ALTER SEQUENCE IF EXISTS lb_events_id_seq RENAME TO lwf_events_id_seq");
+      await client.query(`DO $$ DECLARE item record; BEGIN
+        FOR item IN
+          SELECT table_name,constraint_name
+          FROM information_schema.table_constraints
+          WHERE table_schema='public' AND table_name LIKE 'lwf_%' AND constraint_name LIKE 'lb_%'
+        LOOP
+          EXECUTE format('ALTER TABLE %I RENAME CONSTRAINT %I TO %I',
+            item.table_name,item.constraint_name,regexp_replace(item.constraint_name,'^lb_','lwf_'));
+        END LOOP;
+      END $$`);
+      await client.query("ALTER TYPE lb_ticket_status RENAME TO lwf_ticket_status");
+      await client.query("ALTER TYPE lb_priority RENAME TO lwf_priority");
+      await client.query(`DO $$ BEGIN
+        IF EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name='lionban_test')
+          AND NOT EXISTS(SELECT 1 FROM information_schema.schemata WHERE schema_name='lionworkforce_test')
+        THEN EXECUTE 'ALTER SCHEMA lionban_test RENAME TO lionworkforce_test';
+        END IF;
+      END $$`);
+      await client.query("ALTER TABLE lb_migrations RENAME TO lwf_migrations");
+      await client.query("CREATE VIEW lb_migrations AS SELECT * FROM lwf_migrations");
+      await client.query("CREATE VIEW lb_repository_connections AS SELECT * FROM lwf_repository_connections");
+      await client.query("CREATE VIEW lb_applications AS SELECT * FROM lwf_applications");
+      await client.query("CREATE VIEW lb_tickets AS SELECT * FROM lwf_tickets");
+      await client.query("CREATE VIEW lb_executions AS SELECT * FROM lwf_executions");
+      await client.query("CREATE VIEW lb_events AS SELECT * FROM lwf_events");
+      await client.query("CREATE VIEW lb_approvals AS SELECT * FROM lwf_approvals");
+      await client.query("CREATE VIEW lb_artifacts AS SELECT * FROM lwf_artifacts");
+      await client.query("CREATE VIEW lb_worker_heartbeats AS SELECT * FROM lwf_worker_heartbeats");
+      await client.query("CREATE VIEW lb_worker_control AS SELECT * FROM lwf_worker_control");
+      await client.query("CREATE VIEW lb_settings AS SELECT * FROM lwf_settings");
       await client.query("COMMIT");
     }
   } catch (error) {

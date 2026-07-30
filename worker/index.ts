@@ -178,7 +178,7 @@ async function createPullRequest(job:Job, branch:string) {
   const response=await fetch(`https://api.github.com/repos/${job.full_name}/pulls`,{
     method:"POST",
     headers:{Accept:"application/vnd.github+json",Authorization:`Bearer ${process.env.GITHUB_TOKEN}`,"X-GitHub-Api-Version":"2022-11-28","content-type":"application/json"},
-    body:JSON.stringify({title:`fix: ${job.title}`,head:branch,base:job.default_branch,body:`Correção automática preparada pelo LionBan para o chamado #${job.ticket_id}.`}),
+    body:JSON.stringify({title:`fix: ${job.title}`,head:branch,base:job.default_branch,body:`Correção automática preparada pelo LionWorkForce para o chamado #${job.ticket_id}.`}),
   });
   if (!response.ok) throw new Error(`GITHUB_PR_FAILED_${response.status}: ${(await response.text()).slice(0,1000)}`);
   return response.json() as Promise<{number:number; html_url:string}>;
@@ -240,7 +240,7 @@ async function assertNotCancelled(job:Job) {
   if (result.rows[0]?.cancellation_requested) throw new Error("EXECUTION_CANCELLED");
 }
 async function heartbeat(codexAuthenticated:boolean, statusMessage:string) {
-  await db.query(`INSERT INTO lb_worker_heartbeats(worker_id,last_seen,codex_authenticated,status_message)
+  await db.query(`INSERT INTO lwf_worker_heartbeats(worker_id,last_seen,codex_authenticated,status_message)
     VALUES($1,now(),$2,$3)
     ON CONFLICT(worker_id) DO UPDATE SET last_seen=now(),codex_authenticated=EXCLUDED.codex_authenticated,status_message=EXCLUDED.status_message`,
     [workerId,codexAuthenticated,statusMessage]);
@@ -336,7 +336,7 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   await git(["merge","--no-ff",branch,"-m",job.title.trim().slice(0,200)],repo);
   await git(["push","origin",safe(job.default_branch)],repo);
   if (job.create_tag && job.release_tag) {
-    await git(["tag","-a",safe(job.release_tag),"-m",`Release ${job.release_tag} - LionBan chamado #${job.ticket_id}`],repo);
+    await git(["tag","-a",safe(job.release_tag),"-m",`Release ${job.release_tag} - LionWorkForce chamado #${job.ticket_id}`],repo);
     await git(["push","origin",safe(job.release_tag)],repo);
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
@@ -346,17 +346,17 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   await event(job,"merge.completed","Correção validada e integrada à branch principal");
 }
 async function processJob(job:Job) {
-  const root=await mkdtemp(path.join(tmpdir(),`lionban-${job.ticket_id}-`)); const repo=path.join(root,"repo");
+  const root=await mkdtemp(path.join(tmpdir(),`lionworkforce-${job.ticket_id}-`)); const repo=path.join(root,"repo");
   try {
     await event(job,"repository.validating",`Validando acesso ao repositório ${job.full_name}`);
     if (!await validateRepo(job.full_name, Number(job.github_repo_id))) throw new Error("REPOSITORY_NOT_AUTHORIZED");
-    const branch=`lionban/chamado-${job.ticket_id}`;
+    const branch=`lionworkforce/chamado-${job.ticket_id}`;
     await event(job,"repository.cloning",`Clonando ${job.full_name}`);
     await git(["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
     const base=(await git(["rev-parse","HEAD"],repo)).trim();
     await git(["checkout","-b",branch],repo);
-    await git(["config","user.name",process.env.GIT_AUTHOR_NAME?.trim() || "LionBan Bot"],repo);
-    await git(["config","user.email",process.env.GIT_AUTHOR_EMAIL?.trim() || "lionban@users.noreply.github.com"],repo);
+    await git(["config","user.name",process.env.GIT_AUTHOR_NAME?.trim() || "LionWorkForce Bot"],repo);
+    await git(["config","user.email",process.env.GIT_AUTHOR_EMAIL?.trim() || "lionworkforce@users.noreply.github.com"],repo);
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     await assertNotCancelled(job);
@@ -405,16 +405,16 @@ async function processJob(job:Job) {
     );
     let attachmentNote="";
     if (artifactRows.rowCount) {
-      const attachmentDir=path.join(repo,".lionban-attachments"); await mkdir(attachmentDir,{recursive:true});
+      const attachmentDir=path.join(repo,".lionworkforce-attachments"); await mkdir(attachmentDir,{recursive:true});
       for (const [index,artifact] of artifactRows.rows.entries()) {
         const name=`${index+1}-${artifact.name.replace(/[^\w.-]/g,"_")}`; await writeFile(path.join(attachmentDir,name),artifact.content);
       }
-      attachmentNote=`\nHá ${artifactRows.rowCount} captura(s) de tela em .lionban-attachments/. Analise essas imagens como evidência do bug. Não inclua essa pasta no commit.`;
+      attachmentNote=`\nHá ${artifactRows.rowCount} captura(s) de tela em .lionworkforce-attachments/. Analise essas imagens como evidência do bug. Não inclua essa pasta no commit.`;
     }
     const baselineNote=baselineFailures.size
       ? `\nValidações que já falhavam antes da sua alteração: ${[...baselineFailures.keys()].join(", ")}. Não esconda essas falhas; evite introduzir erros novos e informe o que permaneceu preexistente.\n`
       : "";
-    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.
+    const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionWorkForce.
 Título: ${job.title}
 Criticidade: ${{low:"Baixa",medium:"Média",high:"Alta",critical:"Crítica"}[job.priority]}
 Descrição: ${job.description}${attachmentNote}${baselineNote}
@@ -446,7 +446,7 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     } else {
       await event(job,"documentation.updated","Documentação do projeto atualizada",{files:changedFiles.filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file))});
     }
-    await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
+    await rm(path.join(repo,".lionworkforce-attachments"),{recursive:true,force:true});
     const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
     await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);

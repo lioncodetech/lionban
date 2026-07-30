@@ -1,11 +1,11 @@
 import { Pool, type PoolClient, type QueryResultRow } from "pg";
 
-const globalForDb = globalThis as unknown as { lionbanPool?: Pool };
-export const db = globalForDb.lionbanPool ?? new Pool({
+const globalForDb = globalThis as unknown as { lionworkforcePool?: Pool };
+export const db = globalForDb.lionworkforcePool ?? new Pool({
   connectionString: process.env.DATABASE_URL,
   max: Number(process.env.DB_POOL_SIZE ?? 10),
 });
-if (process.env.NODE_ENV !== "production") globalForDb.lionbanPool = db;
+if (process.env.NODE_ENV !== "production") globalForDb.lionworkforcePool = db;
 
 export async function query<T extends QueryResultRow>(text: string, values: unknown[] = []) {
   return db.query<T>(text, values);
@@ -16,4 +16,3 @@ export async function transaction<T>(fn: (client: PoolClient) => Promise<T>) {
   catch (error) { await client.query("ROLLBACK"); throw error; }
   finally { client.release(); }
 }
-

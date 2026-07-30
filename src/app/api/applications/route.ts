@@ -19,7 +19,7 @@ export async function GET() {
     install_command,test_command,lint_command,build_command,enabled,created_at,
     deploy_webhook_url IS NOT NULL deploy_configured,
     COALESCE(ARRAY(SELECT jsonb_object_keys(test_environment)),ARRAY[]::text[]) test_environment_keys
-    FROM lb_applications WHERE enabled=true ORDER BY name`);
+    FROM lwf_applications WHERE enabled=true ORDER BY name`);
   return NextResponse.json(result.rows);
 }
 
@@ -42,17 +42,17 @@ export async function POST(request: Request) {
   const owner = authorized.full_name.split("/")[0];
   const application = await transaction(async client => {
     let connection = await client.query(
-      "SELECT id FROM lb_repository_connections WHERE provider='github' AND account_login=$1 ORDER BY created_at LIMIT 1",
+      "SELECT id FROM lwf_repository_connections WHERE provider='github' AND account_login=$1 ORDER BY created_at LIMIT 1",
       [owner],
     );
     if (!connection.rowCount) {
       connection = await client.query(
-        "INSERT INTO lb_repository_connections(provider,account_login) VALUES('github',$1) RETURNING id",
+        "INSERT INTO lwf_repository_connections(provider,account_login) VALUES('github',$1) RETURNING id",
         [owner],
       );
     }
     const result = await client.query(
-      `INSERT INTO lb_applications(connection_id,github_repo_id,name,full_name,default_branch,language,clone_url)
+      `INSERT INTO lwf_applications(connection_id,github_repo_id,name,full_name,default_branch,language,clone_url)
        VALUES($1,$2,$3,$4,$5,$6,$7)
        ON CONFLICT(github_repo_id) DO UPDATE SET
          name=EXCLUDED.name, full_name=EXCLUDED.full_name, default_branch=EXCLUDED.default_branch,
