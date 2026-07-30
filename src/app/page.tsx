@@ -4,7 +4,10 @@ import { ClipboardEvent, DragEvent, FormEvent, useEffect, useRef, useState } fro
 import Image from "next/image";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
-type App = { id: string; name: string; repo: string; language: string; branch: string; color: string; deployConfigured: boolean };
+type App = {
+  id:string; name:string; repo:string; language:string; branch:string; color:string; deployConfigured:boolean;
+  installCommand:string; testCommand:string; lintCommand:string; buildCommand:string;
+};
 type Ticket = { id: number; appId: string; title: string; description: string; priority: "Baixa" | "Média" | "Alta" | "Crítica"; status: Status; age: string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
@@ -70,6 +73,11 @@ export default function Home() {
   const [autoDeploy, setAutoDeploy] = useState(false);
   const [configApp, setConfigApp] = useState<App | null>(null);
   const [deployWebhookUrl, setDeployWebhookUrl] = useState("");
+  const [removeDeployWebhook, setRemoveDeployWebhook] = useState(false);
+  const [installCommand, setInstallCommand] = useState("");
+  const [testCommand, setTestCommand] = useState("");
+  const [lintCommand, setLintCommand] = useState("");
+  const [buildCommand, setBuildCommand] = useState("");
   const [ticketDetails, setTicketDetails] = useState<TicketDetails | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
@@ -77,7 +85,10 @@ export default function Home() {
   const [releaseTag, setReleaseTag] = useState("");
   const [duplicating, setDuplicating] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087", deployConfigured:false };
+  const app = (id: string) => applicationList.find(a => a.id === id) ?? {
+    id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
+    deployConfigured:false,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",
+  };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
   useEffect(() => {
@@ -89,6 +100,8 @@ export default function Home() {
         setApplicationList(appRows.map((row: Record<string, unknown>) => ({
           id:String(row.id), name:String(row.name), repo:String(row.full_name),
           language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
+          installCommand:String(row.install_command ?? ""),testCommand:String(row.test_command ?? ""),
+          lintCommand:String(row.lint_command ?? ""),buildCommand:String(row.build_command ?? ""),
         })));
         setTickets(ticketRows.map((row: Record<string, unknown>) => ({
           id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
@@ -277,7 +290,9 @@ export default function Home() {
     }
     const imported: App = {
       id: result.id, name: result.name, repo: result.full_name,
-      language: result.language ?? "Não detectada", branch: result.default_branch, color: "#236b50", deployConfigured:Boolean(result.deploy_configured),
+      language: result.language ?? "Não detectada", branch: result.default_branch, color:"#236b50", deployConfigured:Boolean(result.deploy_configured),
+      installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
+      lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
     };
     setApplicationList(current => [...current.filter(item => item.repo !== imported.repo), imported]);
     setImporting(null); setImportModal(false); setView("apps");
@@ -287,12 +302,20 @@ export default function Home() {
     e.preventDefault();
     if (!configApp) return;
     const response=await fetch(`/api/applications/${configApp.id}`,{
-      method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({deployWebhookUrl:deployWebhookUrl.trim()}),
+      method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({
+        deployWebhookUrl:removeDeployWebhook ? null : (deployWebhookUrl.trim() || undefined),
+        installCommand:installCommand.trim(),testCommand:testCommand.trim(),
+        lintCommand:lintCommand.trim(),buildCommand:buildCommand.trim(),
+      }),
     });
-    if (!response.ok) { setDataError("Não foi possível salvar o webhook de deploy."); return; }
+    if (!response.ok) { setDataError("Não foi possível salvar a configuração da aplicação."); return; }
     const result=await response.json();
-    setApplicationList(current => current.map(item => item.id === configApp.id ? {...item,deployConfigured:Boolean(result.deploy_configured)} : item));
-    setConfigApp(null); setDeployWebhookUrl("");
+    setApplicationList(current => current.map(item => item.id === configApp.id ? {
+      ...item,deployConfigured:Boolean(result.deploy_configured),
+      installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
+      lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
+    } : item));
+    setConfigApp(null); setDeployWebhookUrl(""); setRemoveDeployWebhook(false);
   }
 
   const codexProgressEvent=ticketDetails?.events.findLast(event=>event.kind==="codex.started");
@@ -339,7 +362,11 @@ export default function Home() {
         <div className="app-icon" style={{ background: a.color }}>{a.name[0]}</div><span className="authorized">● AUTORIZADO</span>
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
         <dl><div><dt>Linguagem</dt><dd>{a.language}</dd></div><div><dt>Branch principal</dt><dd>{a.branch}</dd></div></dl>
-        <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button onClick={() => { setConfigApp(a); setDeployWebhookUrl(""); }}>Configurar →</button></footer>
+        <footer><span>{tickets.filter(t => t.appId === a.id).length} chamados</span><button onClick={() => {
+          setConfigApp(a); setDeployWebhookUrl(""); setRemoveDeployWebhook(false);
+          setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
+          setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
+        }}>Configurar →</button></footer>
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
     </section>
 
@@ -366,9 +393,15 @@ export default function Home() {
 
     {configApp && <div className="overlay" onMouseDown={() => setConfigApp(null)}><form className="modal config-modal" onSubmit={saveApplicationConfig} onMouseDown={e => e.stopPropagation()}>
       <header><div><p>CONFIGURAR APLICAÇÃO</p><h2>{configApp.name}</h2></div><button type="button" onClick={() => setConfigApp(null)}>×</button></header>
-      <p className="config-help">Cole o webhook de deploy criado no serviço correspondente do EasyPanel. O endereço fica armazenado no banco e não é exibido novamente.</p>
-      <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
-      <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Cancelar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setDeployWebhookUrl("")}>Remover webhook</button>}<button className="primary">Salvar</button></footer>
+      <p className="config-help">Configure como o worker prepara e valida este repositório. Use os mesmos comandos que você executaria localmente.</p>
+      <div className="command-grid">
+        <label>Comando de instalação<input value={installCommand} onChange={e=>setInstallCommand(e.target.value)} placeholder="npm ci" /></label>
+        <label>Comando de teste<input value={testCommand} onChange={e=>setTestCommand(e.target.value)} placeholder="npm test" /></label>
+        <label>Comando de lint<input value={lintCommand} onChange={e=>setLintCommand(e.target.value)} placeholder="npm run lint" /></label>
+        <label>Comando de build<input value={buildCommand} onChange={e=>setBuildCommand(e.target.value)} placeholder="npm run build" /></label>
+      </div>
+      <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
+      <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Cancelar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setRemoveDeployWebhook(value=>!value)}>{removeDeployWebhook?"Manter webhook":"Remover webhook"}</button>}<button className="primary">Salvar</button></footer>
     </form></div>}
 
     {importModal && <div className="overlay" onMouseDown={() => setImportModal(false)}><section className="modal import-modal" onMouseDown={e => e.stopPropagation()}>
