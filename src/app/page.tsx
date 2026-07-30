@@ -3,6 +3,7 @@
 import { ClipboardEvent, DragEvent, FormEvent, useEffect, useRef, useState } from "react";
 import Image from "next/image";
 import { AttachmentList, type Attachment } from "./attachment-list";
+import { attachmentName } from "./attachment-names";
 
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = {
@@ -386,11 +387,11 @@ export default function Home() {
     if (description.trim().length<10) return setSubmitError("A descrição precisa ter pelo menos 10 caracteres.");
     setSubmittingTicket(true);
     try {
-      const encodedAttachments = await Promise.all(attachments.map(async ({ file }) => {
+      const encodedAttachments = await Promise.all(attachments.map(async ({ file }, index) => {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
       });
-      return { name:file.name, mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
+      return { name:attachmentName(file.name, index, attachments.length), mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
       }));
       const response = await fetch(editingTicketId?`/api/tickets/${editingTicketId}`:"/api/tickets", {
       method:editingTicketId?"PATCH":"POST", headers:{"content-type":"application/json"},
