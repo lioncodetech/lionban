@@ -53,6 +53,20 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
     });
   });
 }
+function commandParts(command:string) {
+  const [bin,...args]=command.trim().split(/\s+/);
+  return {bin,args};
+}
+function validationSignature(error:unknown, repo:string) {
+  const message=error instanceof Error?error.message:String(error);
+  return message
+    .replaceAll(repo,"<repo>")
+    .replaceAll(repo.replaceAll("\\","/"),"<repo>")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g,"")
+    .replace(/\r/g,"")
+    .replace(/[ \t]+$/gm,"")
+    .trim();
+}
 function runControlled(command:string,args:string[],cwd:string,job:Job,progressEventId:number) {
   const timeoutMs=Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000));
   const activityTimeoutMs=Math.max(60_000,Number(process.env.CODEX_ACTIVITY_TIMEOUT_MS ?? 8*60*1000));
@@ -352,6 +366,21 @@ async function processJob(job:Job) {
       await publishChanges(job,repo,branch,true);
       return;
     }
+    const validationCommands=[job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[];
+    const baselineFailures=new Map<string,string>();
+    for (const command of validationCommands) {
+      const {bin,args}=commandParts(command);
+      try {
+        await run(bin,args,repo);
+        await event(job,"validation.baseline_passed",`Validação inicial passou: ${command}`,{command});
+      } catch(error) {
+        baselineFailures.set(command,validationSignature(error,repo));
+        await event(job,"validation.baseline_failed",`Falha preexistente detectada antes da correção: ${command}`,{
+          command,error:validationSignature(error,repo).slice(-2000),
+        });
+      }
+      await assertNotCancelled(job);
+    }
     const artifactRows = await db.query<{name:string; content:Buffer}>(
       "SELECT name,content FROM lb_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
       [job.ticket_id],
@@ -364,10 +393,13 @@ async function processJob(job:Job) {
       }
       attachmentNote=`\nHá ${artifactRows.rowCount} captura(s) de tela em .lionban-attachments/. Analise essas imagens como evidência do bug. Não inclua essa pasta no commit.`;
     }
+    const baselineNote=baselineFailures.size
+      ? `\nValidações que já falhavam antes da sua alteração: ${[...baselineFailures.keys()].join(", ")}. Não esconda essas falhas; evite introduzir erros novos e informe o que permaneceu preexistente.\n`
+      : "";
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionBan.
 Título: ${job.title}
 Criticidade: ${{low:"Baixa",medium:"Média",high:"Alta",critical:"Crítica"}[job.priority]}
-Descrição: ${job.description}${attachmentNote}
+Descrição: ${job.description}${attachmentNote}${baselineNote}
 
 Fluxo obrigatório:
 1. Antes de alterar código, localize e leia a documentação e as instruções do projeto: AGENTS.md, README, CONTRIBUTING, CHANGELOG, a pasta docs/ e arquivos equivalentes que existirem.
@@ -396,22 +428,39 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     } else {
       await event(job,"documentation.updated","Documentação do projeto atualizada",{files:changedFiles.filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file))});
     }
-    await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
-    for (const command of [job.test_command,job.lint_command,job.build_command].filter(Boolean) as string[]) {
-      const [bin,...args]=command.split(/\s+/); await run(bin,args,repo);
-      await assertNotCancelled(job);
-    }
+    await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
     const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
+    await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
+    for (const command of validationCommands) {
+      const {bin,args}=commandParts(command);
+      try {
+        await run(bin,args,repo);
+        await event(job,"validation.passed",`Validação passou após a correção: ${command}`,{command});
+      } catch(error) {
+        const currentSignature=validationSignature(error,repo);
+        const baselineSignature=baselineFailures.get(command);
+        if (baselineSignature===currentSignature) {
+          await event(job,"validation.preexisting",`Falha preexistente permaneceu sem alteração: ${command}`,{
+            command,error:currentSignature.slice(-2000),
+          });
+          await assertNotCancelled(job);
+          continue;
+        }
+        await savePatch(job,repo);
+        await event(job,"patch.prepared","Correção preservada após falha de validação",{command});
+        await requestApproval(job,`A validação "${command}" apresentou uma falha nova ou diferente. O patch foi preservado para revisão.`);
+        return;
+      }
+      await assertNotCancelled(job);
+    }
     const requiresSeverityApproval=job.priority==="high" || job.priority==="critical";
     if (!job.test_command && requiresSeverityApproval) {
-      await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
       await savePatch(job,repo);
       await event(job,"patch.prepared","Correção preservada para aprovação excepcional");
       await requestApproval(job,`Chamado de criticidade ${job.priority==="critical"?"Crítica":"Alta"} sem comando de teste confiável configurado`);
       return;
     }
-    await rm(path.join(repo,".lionban-attachments"),{recursive:true,force:true});
     if (requiresSeverityApproval) {
       await savePatch(job,repo);
       await event(job,"patch.prepared","Correção preservada antes da aprovação por criticidade");

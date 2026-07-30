@@ -41,6 +41,8 @@ const eventLabels:Record<string,string> = {
   "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
   "approval.completed":"Aprovação concluída",
   "version.updated":"Versão sincronizada com a tag", "version.skipped":"Sincronização de versão ignorada",
+  "validation.baseline_passed":"Validação inicial aprovada", "validation.baseline_failed":"Falha preexistente identificada",
+  "validation.passed":"Validação final aprovada", "validation.preexisting":"Falha preexistente confirmada",
 };
 const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
   events:(result.events as TicketEvent[] | undefined) ?? [],
