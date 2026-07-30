@@ -291,9 +291,14 @@ async function claim():Promise<Job|null> {
   try {
     await client.query("BEGIN");
     const control=await client.query<{queue_paused:boolean}>(
-      "SELECT queue_paused FROM lwf_worker_control WHERE singleton=true FOR SHARE",
+      "SELECT queue_paused FROM lwf_worker_control WHERE singleton=true FOR UPDATE",
     );
     if (control.rows[0]?.queue_paused) {
+      await client.query("ROLLBACK");
+      return null;
+    }
+    const active=await client.query("SELECT 1 FROM lwf_executions WHERE state='running' LIMIT 1");
+    if (active.rowCount) {
       await client.query("ROLLBACK");
       return null;
     }
@@ -302,10 +307,6 @@ async function claim():Promise<Job|null> {
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
-        AND NOT EXISTS (
-          SELECT 1 FROM lwf_executions active
-          WHERE active.application_id=e.application_id AND active.state='running'
-        )
       ORDER BY t.queue_priority ASC,t.created_at ASC,e.attempt ASC
       FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
@@ -319,9 +320,18 @@ async function recoverInterruptedJobs() {
   const client=await db.connect();
   try {
     await client.query("BEGIN");
-    const recovered=await client.query<{ticket_id:number}>(`UPDATE lwf_executions
+    const recovered=await client.query<{ticket_id:number}>(`UPDATE lwf_executions execution
       SET state='queued',worker_id=NULL,started_at=NULL,error_message=NULL
-      WHERE state='running' RETURNING ticket_id`);
+      WHERE execution.state='running'
+        AND (
+          execution.worker_id IS NULL
+          OR NOT EXISTS (
+            SELECT 1 FROM lwf_worker_heartbeats heartbeat
+            WHERE heartbeat.worker_id=execution.worker_id
+              AND heartbeat.last_seen > now()-interval '35 seconds'
+          )
+        )
+      RETURNING execution.ticket_id`);
     for (const row of recovered.rows) {
       await client.query("UPDATE lwf_tickets SET status='open',cancellation_requested=false,updated_at=now() WHERE id=$1",[row.ticket_id]);
       await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'execution.recovered','Execução interrompida foi recuperada e voltou para a fila')",[row.ticket_id]);
@@ -564,6 +574,8 @@ async function main() {
   await applyRetentionPolicy();
   const retentionTimer=setInterval(()=>applyRetentionPolicy().catch(error=>console.error("retention:",error)),60*60*1000);
   retentionTimer.unref();
+  const recoveryTimer=setInterval(()=>recoverInterruptedJobs().catch(error=>console.error("recovery:",error)),30*1000);
+  recoveryTimer.unref();
   for (;;) { const job=await claim(); if (job) await processJob(job); else await new Promise(r=>setTimeout(r,3000)); }
 }
 main().catch(error => { console.error(error); process.exit(1); });
