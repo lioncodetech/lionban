@@ -132,7 +132,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
     const timeout=setTimeout(()=>stop("CODEX_TIMEOUT"),timeoutMs);
     const cancellation=setInterval(async () => {
       try {
-        const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lb_tickets WHERE id=$1",[job.ticket_id]);
+        const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lwf_tickets WHERE id=$1",[job.ticket_id]);
         if (result.rows[0]?.cancellation_requested) stop("EXECUTION_CANCELLED");
       } catch(error) { console.error("cancel-check:",error); }
     },2000);
@@ -149,7 +149,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
         return;
       }
       try {
-        await db.query("UPDATE lb_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
+        await db.query("UPDATE lwf_events SET message=$1,metadata=metadata || $2::jsonb WHERE id=$3",
           [`${latestActivity} · ${Math.floor(elapsedSeconds/60)}m ${elapsedSeconds%60}s`,JSON.stringify({elapsedSeconds,inactiveSeconds,lastSignal:new Date().toISOString(),latestActivity,receivedStructuredEvent,startupTimeoutSeconds:Math.round(startupTimeoutMs/1000),activityTimeoutMinutes:Math.round(activityTimeoutMs/60000),transcript}),progressEventId]);
       } catch(error) { console.error("progress-update:",error); }
     },5000);
@@ -163,14 +163,14 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   });
 }
 async function event(job:Job, kind:string, message:string, metadata={}) {
-  const result=await db.query<{id:number}>("INSERT INTO lb_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5) RETURNING id", [job.ticket_id,job.execution_id,kind,message,metadata]);
+  const result=await db.query<{id:number}>("INSERT INTO lwf_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5) RETURNING id", [job.ticket_id,job.execution_id,kind,message,metadata]);
   return result.rows[0].id;
 }
 async function savePatch(job:Job, repo:string, committed=false) {
   if (!committed) await git(["add","-N","."],repo);
   const patch=committed ? await git(["format-patch","-1","--stdout"],repo) : await git(["diff","--binary","HEAD"],repo);
   if (!patch.trim()) return;
-  await db.query(`INSERT INTO lb_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
+  await db.query(`INSERT INTO lwf_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
     VALUES($1,'patch',$2,$3,'text/x-diff',$4,$5)`,
     [job.ticket_id,`chamado-${job.ticket_id}.patch`,`db://${job.ticket_id}/chamado-${job.ticket_id}.patch`,Buffer.byteLength(patch),Buffer.from(patch)]);
 }
@@ -185,26 +185,26 @@ async function createPullRequest(job:Job, branch:string) {
 }
 async function triggerDeploy(job:Job) {
   if (!job.deploy_webhook_url) throw new Error("DEPLOY_WEBHOOK_NOT_CONFIGURED");
-  await db.query("UPDATE lb_tickets SET deploy_status='in_progress',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+  await db.query("UPDATE lwf_tickets SET deploy_status='in_progress',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
   await event(job,"deploy.started","Deploy solicitado ao EasyPanel; aguardando confirmação de conclusão");
   try {
     const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
     if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
     await event(job,"deploy.triggered","EasyPanel aceitou a solicitação de deploy");
   } catch(error) {
-    await db.query("UPDATE lb_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+    await db.query("UPDATE lwf_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
     throw error;
   }
 }
 async function requestApproval(job:Job, reason:string) {
-  await db.query("UPDATE lb_tickets SET status='approval',updated_at=now() WHERE id=$1",[job.ticket_id]);
-  await db.query("INSERT INTO lb_approvals(ticket_id,execution_id,reason) VALUES($1,$2,$3)",[job.ticket_id,job.execution_id,reason]);
-  await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]);
+  await db.query("UPDATE lwf_tickets SET status='approval',updated_at=now() WHERE id=$1",[job.ticket_id]);
+  await db.query("INSERT INTO lwf_approvals(ticket_id,execution_id,reason) VALUES($1,$2,$3)",[job.ticket_id,job.execution_id,reason]);
+  await db.query("UPDATE lwf_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]);
   await event(job,"approval.requested","Aprovação do usuário solicitada",{reason});
 }
 async function finishApprovedPatchOnly(job:Job, summary:string) {
-  await db.query("UPDATE lb_tickets SET status='completed',result_summary=$1,updated_at=now() WHERE id=$2",[summary,job.ticket_id]);
-  await db.query("UPDATE lb_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
+  await db.query("UPDATE lwf_tickets SET status='completed',result_summary=$1,updated_at=now() WHERE id=$2",[summary,job.ticket_id]);
+  await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
   await event(job,"approval.completed",summary);
 }
 async function synchronizePackageVersion(job:Job, repo:string) {
@@ -236,7 +236,7 @@ async function synchronizePackageVersion(job:Job, repo:string) {
   });
 }
 async function assertNotCancelled(job:Job) {
-  const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lb_tickets WHERE id=$1",[job.ticket_id]);
+  const result=await db.query<{cancellation_requested:boolean}>("SELECT cancellation_requested FROM lwf_tickets WHERE id=$1",[job.ticket_id]);
   if (result.rows[0]?.cancellation_requested) throw new Error("EXECUTION_CANCELLED");
 }
 async function heartbeat(codexAuthenticated:boolean, statusMessage:string) {
@@ -258,7 +258,7 @@ async function claim():Promise<Job|null> {
   try {
     await client.query("BEGIN");
     const control=await client.query<{queue_paused:boolean}>(
-      "SELECT queue_paused FROM lb_worker_control WHERE singleton=true FOR SHARE",
+      "SELECT queue_paused FROM lwf_worker_control WHERE singleton=true FOR SHARE",
     );
     if (control.rows[0]?.queue_paused) {
       await client.query("ROLLBACK");
@@ -267,18 +267,18 @@ async function claim():Promise<Job|null> {
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id
-      FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
+      FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
         AND NOT EXISTS (
-          SELECT 1 FROM lb_executions active
+          SELECT 1 FROM lwf_executions active
           WHERE active.application_id=e.application_id AND active.state='running'
         )
       ORDER BY t.queue_priority ASC,t.created_at ASC,e.attempt ASC
       FOR UPDATE OF e SKIP LOCKED LIMIT 1`);
     if (!result.rowCount) { await client.query("ROLLBACK"); return null; }
     const job=result.rows[0];
-    await client.query("UPDATE lb_executions SET state='running',worker_id=$1,started_at=now() WHERE id=$2",[workerId,job.execution_id]);
-    await client.query("UPDATE lb_tickets SET status='analyzing',updated_at=now() WHERE id=$1",[job.ticket_id]);
+    await client.query("UPDATE lwf_executions SET state='running',worker_id=$1,started_at=now() WHERE id=$2",[workerId,job.execution_id]);
+    await client.query("UPDATE lwf_tickets SET status='analyzing',updated_at=now() WHERE id=$1",[job.ticket_id]);
     await client.query("COMMIT"); return job;
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
@@ -286,12 +286,12 @@ async function recoverInterruptedJobs() {
   const client=await db.connect();
   try {
     await client.query("BEGIN");
-    const recovered=await client.query<{ticket_id:number}>(`UPDATE lb_executions
+    const recovered=await client.query<{ticket_id:number}>(`UPDATE lwf_executions
       SET state='queued',worker_id=NULL,started_at=NULL,error_message=NULL
       WHERE state='running' RETURNING ticket_id`);
     for (const row of recovered.rows) {
-      await client.query("UPDATE lb_tickets SET status='open',cancellation_requested=false,updated_at=now() WHERE id=$1",[row.ticket_id]);
-      await client.query("INSERT INTO lb_events(ticket_id,kind,message) VALUES($1,'execution.recovered','Execução interrompida foi recuperada e voltou para a fila')",[row.ticket_id]);
+      await client.query("UPDATE lwf_tickets SET status='open',cancellation_requested=false,updated_at=now() WHERE id=$1",[row.ticket_id]);
+      await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'execution.recovered','Execução interrompida foi recuperada e voltou para a fila')",[row.ticket_id]);
     }
     await client.query("COMMIT");
     if (recovered.rowCount) console.log(`${recovered.rowCount} execução(ões) recuperada(s)`);
@@ -326,9 +326,9 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   if (job.auto_pull_request) {
     const pullRequest=await createPullRequest(job,branch);
     await event(job,"pull_request.created",`Pull Request #${pullRequest.number} criado`,{url:pullRequest.html_url,number:pullRequest.number});
-    await db.query("UPDATE lb_tickets SET status='approval',result_summary=$1 WHERE id=$2",[`Pull Request #${pullRequest.number}: ${pullRequest.html_url}`,job.ticket_id]);
-    await db.query("UPDATE lb_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]);
-    await db.query("INSERT INTO lb_approvals(ticket_id,execution_id,reason) VALUES($1,$2,$3)",[job.ticket_id,job.execution_id,`Autorize e faça o merge do Pull Request #${pullRequest.number} no GitHub`]);
+    await db.query("UPDATE lwf_tickets SET status='approval',result_summary=$1 WHERE id=$2",[`Pull Request #${pullRequest.number}: ${pullRequest.html_url}`,job.ticket_id]);
+    await db.query("UPDATE lwf_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]);
+    await db.query("INSERT INTO lwf_approvals(ticket_id,execution_id,reason) VALUES($1,$2,$3)",[job.ticket_id,job.execution_id,`Autorize e faça o merge do Pull Request #${pullRequest.number} no GitHub`]);
     return;
   }
   await git(["checkout",safe(job.default_branch)],repo);
@@ -341,8 +341,8 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
   if (job.auto_deploy) await triggerDeploy(job);
-  await db.query("UPDATE lb_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
-  await db.query("UPDATE lb_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
+  await db.query("UPDATE lwf_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
+  await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
   await event(job,"merge.completed","Correção validada e integrada à branch principal");
 }
 async function processJob(job:Job) {
@@ -357,7 +357,7 @@ async function processJob(job:Job) {
     await git(["checkout","-b",branch],repo);
     await git(["config","user.name",process.env.GIT_AUTHOR_NAME?.trim() || "LionWorkForce Bot"],repo);
     await git(["config","user.email",process.env.GIT_AUTHOR_EMAIL?.trim() || "lionworkforce@users.noreply.github.com"],repo);
-    await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
+    await db.query("UPDATE lwf_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     await assertNotCancelled(job);
     let installCommand=job.install_command;
@@ -373,7 +373,7 @@ async function processJob(job:Job) {
     }
     if (job.resume_artifact_id) {
       const artifact=await db.query<{content:Buffer}>(
-        "SELECT content FROM lb_artifacts WHERE id=$1 AND ticket_id=$2 AND kind='patch'",
+        "SELECT content FROM lwf_artifacts WHERE id=$1 AND ticket_id=$2 AND kind='patch'",
         [job.resume_artifact_id,job.ticket_id],
       );
       if (!artifact.rowCount || !artifact.rows[0].content) throw new Error("APPROVED_PATCH_NOT_FOUND");
@@ -400,7 +400,7 @@ async function processJob(job:Job) {
       await assertNotCancelled(job);
     }
     const artifactRows = await db.query<{name:string; content:Buffer}>(
-      "SELECT name,content FROM lb_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
+      "SELECT name,content FROM lwf_artifacts WHERE ticket_id=$1 AND kind='screenshot' AND content IS NOT NULL ORDER BY created_at",
       [job.ticket_id],
     );
     let attachmentNote="";
@@ -427,7 +427,7 @@ Fluxo obrigatório:
 5. Execute os testes relevantes e produza um resumo final, incluindo quais documentos foram consultados e atualizados.
 
 Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
-    await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
+    await db.query("UPDATE lwf_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
     await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
@@ -449,7 +449,7 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     await rm(path.join(repo,".lionworkforce-attachments"),{recursive:true,force:true});
     const changed=(await git(["status","--porcelain"],repo)).trim();
     if (!changed) throw new Error("NO_CHANGES");
-    await db.query("UPDATE lb_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
+    await db.query("UPDATE lwf_tickets SET status='testing' WHERE id=$1",[job.ticket_id]);
     for (const command of validationCommands) {
       const {bin,args}=commandParts(command);
       try {
@@ -489,8 +489,8 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
   } catch(error) {
     const message=error instanceof Error?error.message:String(error);
     const cancelled=message === "EXECUTION_CANCELLED";
-    await db.query("UPDATE lb_tickets SET status=$1,updated_at=now() WHERE id=$2",[cancelled?"cancelled":"failed",job.ticket_id]);
-    await db.query("UPDATE lb_executions SET state=$1,finished_at=now(),error_message=$2 WHERE id=$3",[cancelled?"cancelled":"failed",cancelled?null:message.slice(0,4000),job.execution_id]);
+    await db.query("UPDATE lwf_tickets SET status=$1,updated_at=now() WHERE id=$2",[cancelled?"cancelled":"failed",job.ticket_id]);
+    await db.query("UPDATE lwf_executions SET state=$1,finished_at=now(),error_message=$2 WHERE id=$3",[cancelled?"cancelled":"failed",cancelled?null:message.slice(0,4000),job.execution_id]);
     await event(job,cancelled?"execution.cancelled":"execution.failed",cancelled?"Execução cancelada":"A execução falhou",cancelled?{}:{error:message.slice(0,1000)});
   } finally { await rm(root,{recursive:true,force:true}); }
 }
@@ -499,20 +499,20 @@ async function applyRetentionPolicy() {
   try {
     await client.query("BEGIN");
     const settings=await client.query<{archive_after_days:number;delete_after_days:number}>(
-      "SELECT archive_after_days,delete_after_days FROM lb_settings WHERE singleton=true FOR SHARE",
+      "SELECT archive_after_days,delete_after_days FROM lwf_settings WHERE singleton=true FOR SHARE",
     );
     const archiveDays=settings.rows[0]?.archive_after_days ?? 7;
     const deleteDays=settings.rows[0]?.delete_after_days ?? 15;
-    await client.query(`UPDATE lb_tickets SET archived_at=now()
+    await client.query(`UPDATE lwf_tickets SET archived_at=now()
       WHERE archived_at IS NULL AND status IN ('completed','failed','cancelled')
         AND updated_at <= now()-($1::text || ' days')::interval`,[archiveDays]);
-    const expired=await client.query<{id:number}>(`SELECT id FROM lb_tickets
+    const expired=await client.query<{id:number}>(`SELECT id FROM lwf_tickets
       WHERE status IN ('completed','failed','cancelled')
         AND updated_at <= now()-($1::text || ' days')::interval FOR UPDATE`,[deleteDays]);
     for (const row of expired.rows) {
-      await client.query("DELETE FROM lb_approvals WHERE ticket_id=$1",[row.id]);
-      await client.query("DELETE FROM lb_executions WHERE ticket_id=$1",[row.id]);
-      await client.query("DELETE FROM lb_tickets WHERE id=$1",[row.id]);
+      await client.query("DELETE FROM lwf_approvals WHERE ticket_id=$1",[row.id]);
+      await client.query("DELETE FROM lwf_executions WHERE ticket_id=$1",[row.id]);
+      await client.query("DELETE FROM lwf_tickets WHERE id=$1",[row.id]);
     }
     await client.query("COMMIT");
   } catch(error) {
