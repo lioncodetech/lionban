@@ -11,7 +11,11 @@ type Attachment = { file: File; preview: string };
 type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
-type TicketDetails = { events:TicketEvent[]; executions:TicketExecution[] };
+type TicketDetails = {
+  events:TicketEvent[]; executions:TicketExecution[];
+  auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean;
+  create_tag:boolean; release_tag:string|null;
+};
 type RepoTag = { name:string; commit:{sha:string} };
 type CodexTranscriptItem = { at:string; type:string; text:string };
 
@@ -30,6 +34,13 @@ const eventLabels:Record<string,string> = {
   "tag.created":"Versão criada", "deploy.triggered":"Deploy solicitado", "patch.prepared":"Correção preparada",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
 };
+const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
+  events:(result.events as TicketEvent[] | undefined) ?? [],
+  executions:(result.executions as TicketExecution[] | undefined) ?? [],
+  auto_commit:Boolean(result.auto_commit),auto_push:Boolean(result.auto_push),
+  auto_pull_request:Boolean(result.auto_pull_request),auto_deploy:Boolean(result.auto_deploy),
+  create_tag:Boolean(result.create_tag),release_tag:result.release_tag ? String(result.release_tag) : null,
+});
 
 export default function Home() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -64,6 +75,7 @@ export default function Home() {
   const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
   const [createTag, setCreateTag] = useState(false);
   const [releaseTag, setReleaseTag] = useState("");
+  const [duplicating, setDuplicating] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? { id, name:"Aplicação indisponível", repo:"Repositório removido", language:"—", branch:"—", color:"#829087", deployConfigured:false };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
@@ -97,7 +109,7 @@ export default function Home() {
       const response=await fetch(`/api/tickets/${ticketId}`,{cache:"no-store"});
       if (response.ok) {
         const result=await response.json();
-        setTicketDetails({events:result.events ?? [],executions:result.executions ?? []});
+        setTicketDetails(ticketDetailsFromApi(result));
       }
     },5000);
     return ()=>window.clearInterval(timer);
@@ -139,7 +151,7 @@ export default function Home() {
     const response=await fetch(`/api/tickets/${ticketId}`,{cache:"no-store"});
     if (response.ok) {
       const result=await response.json();
-      setTicketDetails({events:result.events ?? [],executions:result.executions ?? []});
+      setTicketDetails(ticketDetailsFromApi(result));
     }
   }
   async function openTicket(ticket:Ticket) {
@@ -158,17 +170,16 @@ export default function Home() {
 
   async function cloneTicket() {
     if (!detail) return;
-    const response=await fetch(`/api/tickets/${detail.id}`,{
-      method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({clone:true}),
-    });
-    const result=await response.json().catch(()=>({}));
-    if (!response.ok) { setDataError(result.error??"Não foi possível duplicar o chamado."); return; }
-    const cloned:Ticket={
-      id:Number(result.id),appId:String(result.application_id),title:String(result.title),description:String(result.description),
-      priority:priorityFromApi[String(result.priority)]??"Média",status:"Aberto",age:"agora",
-    };
-    setTickets(current=>[cloned,...current]);
-    setDetail(null); setDataError("");
+    attachments.forEach(item=>URL.revokeObjectURL(item.preview));
+    setAttachments([]);
+    setAppId(detail.appId); setTitle(`${detail.title} (cópia)`); setDescription(detail.description); setPriority(detail.priority);
+    setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
+    setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
+    setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
+    setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true);
+    const response=await fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"});
+    if (response.ok) setRepoTags(await response.json());
+    setDetail(null); setModal(true);
   }
 
   async function deleteTicket() {
@@ -193,6 +204,14 @@ export default function Home() {
     if (response.ok) { const tags=await response.json(); setRepoTags(tags); setReleaseTag(suggestNextTag(tags)); }
   }
 
+  function openNewTicket() {
+    attachments.forEach(item=>URL.revokeObjectURL(item.preview));
+    setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média");
+    setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
+    setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setDataError("");
+    setModal(true);
+  }
+
   async function submit(e: FormEvent) {
     e.preventDefault();
     if (!appId || !title.trim() || !description.trim()) return;
@@ -210,7 +229,7 @@ export default function Home() {
     const created = await response.json();
     setTickets(v => [{ id:Number(created.id), appId:String(created.application_id), title:String(created.title), description:String(created.description), priority, status:"Aberto", age:"agora" }, ...v]);
     attachments.forEach(item => URL.revokeObjectURL(item.preview));
-    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]);
+    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setAttachments([]); setDuplicating(false);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
     setCreateTag(false); setReleaseTag(""); setRepoTags([]);
   }
@@ -295,7 +314,7 @@ export default function Home() {
     <section className="content">
       <header>
         <div><p>{view === "board" ? "CENTRO DE CORREÇÕES" : "REPOSITÓRIOS AUTORIZADOS"}</p><h1>{view === "board" ? "Quadro de chamados" : "Aplicações"}</h1></div>
-        <div className="actions"><label>⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar chamado..." /></label><button className="primary" onClick={() => setModal(true)}>＋ Novo chamado</button></div>
+        <div className="actions"><label>⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar chamado..." /></label><button className="primary" onClick={openNewTicket}>＋ Novo chamado</button></div>
       </header>
 
       {view === "board" ? <>
@@ -325,7 +344,7 @@ export default function Home() {
     </section>
 
     {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onPaste={pasteImages} onMouseDown={e => e.stopPropagation()}>
-      <header><div><p>NOVO CHAMADO</p><h2>O que precisa ser corrigido?</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
+      <header><div><p>{duplicating?"DUPLICAR CHAMADO":"NOVO CHAMADO"}</p><h2>{duplicating?"Revise e edite a cópia":"O que precisa ser corrigido?"}</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
       <label>Aplicação <b>*</b><small>O repositório ficará bloqueado após criar.</small></label>
       <div className="picker"><label>⌕ <input value={repoQuery} onChange={e => setRepoQuery(e.target.value)} placeholder="Buscar aplicação ou repositório..." /></label>
         {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => chooseApplication(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
