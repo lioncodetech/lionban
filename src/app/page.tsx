@@ -14,8 +14,9 @@ type Attachment = { file: File; preview: string };
 type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
+type TicketApproval = { id:string; reason:string; decision:string|null; decided_at:string|null; created_at:string; patch_available:boolean };
 type TicketDetails = {
-  events:TicketEvent[]; executions:TicketExecution[];
+  events:TicketEvent[]; executions:TicketExecution[]; approvals:TicketApproval[];
   auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean;
   create_tag:boolean; release_tag:string|null;
 };
@@ -36,10 +37,14 @@ const eventLabels:Record<string,string> = {
   "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
   "tag.created":"Versão criada", "deploy.triggered":"Deploy solicitado", "patch.prepared":"Correção preparada",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
+  "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
+  "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
+  "approval.completed":"Aprovação concluída",
 };
 const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
   events:(result.events as TicketEvent[] | undefined) ?? [],
   executions:(result.executions as TicketExecution[] | undefined) ?? [],
+  approvals:(result.approvals as TicketApproval[] | undefined) ?? [],
   auto_commit:Boolean(result.auto_commit),auto_push:Boolean(result.auto_push),
   auto_pull_request:Boolean(result.auto_pull_request),auto_deploy:Boolean(result.auto_deploy),
   create_tag:Boolean(result.create_tag),release_tag:result.release_tag ? String(result.release_tag) : null,
@@ -179,6 +184,21 @@ export default function Home() {
     setTickets(current => current.map(ticket => ticket.id===detail.id?{...ticket,status:"Falhou"}:ticket));
     setDetail({...detail,status:"Falhou"});
     await openTicket({...detail,status:"Falhou"});
+  }
+
+  async function decideApproval(decision:"approved"|"rejected") {
+    if (!detail) return;
+    const verb=decision==="approved"?"aprovar":"rejeitar";
+    if (!window.confirm(`Deseja ${verb} a correção do chamado #${detail.id}?`)) return;
+    const response=await fetch(`/api/tickets/${detail.id}`,{
+      method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({decision}),
+    });
+    const result=await response.json().catch(()=>({}));
+    if (!response.ok) { setDataError(result.error??"Não foi possível registrar a decisão."); return; }
+    const status:Status=decision==="approved"?"Aberto":"Falhou";
+    setTickets(current=>current.map(ticket=>ticket.id===detail.id?{...ticket,status}:ticket));
+    setDetail({...detail,status});
+    await loadTicketDetails(detail.id);
   }
 
   async function cloneTicket() {
@@ -322,6 +342,7 @@ export default function Home() {
   const codexTranscript=Array.isArray(codexProgressEvent?.metadata?.transcript)
     ? codexProgressEvent.metadata.transcript as CodexTranscriptItem[] : [];
   const codexPrompt=typeof codexProgressEvent?.metadata?.prompt==="string" ? codexProgressEvent.metadata.prompt : "";
+  const pendingApproval=ticketDetails?.approvals.find(approval=>approval.decision===null);
 
   return <main className="shell">
     <aside className="sidebar">
@@ -424,9 +445,10 @@ export default function Home() {
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
       {!ticketDetails && <div className="detail-loading">Carregando atividade…</div>}
       {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
+      {pendingApproval && <section className="approval-panel"><h4>APROVAÇÃO NECESSÁRIA</h4><strong>{pendingApproval.reason}</strong><p>{pendingApproval.patch_available?"A correção foi preservada. Ao aprovar, o worker criará um clone limpo, restaurará o patch e continuará somente com as automações escolhidas no chamado.":"Esta execução não possui patch preservado. Se for um chamado antigo, duplique-o para executar novamente. Se houver Pull Request, a autorização deve ser feita no GitHub."}</p><div><button className="approve-ticket" disabled={!pendingApproval.patch_available} onClick={()=>decideApproval("approved")}>Aprovar correção</button><button className="danger" onClick={()=>decideApproval("rejected")}>Rejeitar correção</button></div></section>}
       {codexProgressEvent && <section className="codex-conversation"><div className="conversation-title"><h4>ATIVIDADE PÚBLICA DO CODEX</h4><span>Atualização automática</span></div>{codexTranscript.length>0?codexTranscript.map((item,index)=><article className={item.type} key={`${item.at}-${index}`}><small>{new Date(item.at).toLocaleTimeString("pt-BR")}</small><p>{item.text}</p></article>):<p className="conversation-empty">O Codex ainda não emitiu uma atualização detalhada.</p>}{codexPrompt&&<details><summary>Ver prompt enviado ao Codex</summary><pre>{codexPrompt}</pre></details>}<small className="conversation-note">Mostra mensagens e ações públicas. O raciocínio interno privado do modelo não é disponibilizado.</small></section>}
       {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
-      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar sem logs</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
+      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar sem logs</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
     </aside></div>}
   </main>;
 }

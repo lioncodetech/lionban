@@ -57,6 +57,7 @@ CREATE TABLE lb_executions (
   finished_at timestamptz,
   error_code text,
   error_message text,
+  resume_artifact_id uuid,
   UNIQUE(ticket_id, attempt)
 );
 CREATE UNIQUE INDEX lb_one_active_execution_per_app ON lb_executions(application_id)
