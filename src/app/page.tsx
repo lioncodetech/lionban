@@ -33,6 +33,7 @@ const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:
 const statusToApi: Record<Status, string> = { Aberto:"open", Analisando:"analyzing", Corrigindo:"fixing", Testando:"testing", "Aguardando aprovação":"approval", Concluído:"completed", Falhou:"failed" };
 const eventLabels:Record<string,string> = {
   "ticket.created":"Chamado criado", "ticket.moved":"Chamado movimentado", "repository.cloned":"Repositório preparado",
+  "ticket.edited":"Chamado atualizado",
   "repository.validating":"Validando repositório", "repository.cloning":"Clonando repositório",
   "repository.validated":"Repositório validado", "codex.started":"Codex trabalhando",
   "execution.recovered":"Execução recuperada", "execution.retried":"Nova tentativa iniciada", "execution.failed":"Execução falhou",
@@ -107,6 +108,9 @@ export default function Home() {
   const [createTag, setCreateTag] = useState(false);
   const [releaseTag, setReleaseTag] = useState("");
   const [duplicating, setDuplicating] = useState(false);
+  const [editingTicketId,setEditingTicketId]=useState<number|null>(null);
+  const [ticketImages,setTicketImages]=useState<StoredAttachment[]>([]);
+  const [previewImage,setPreviewImage]=useState<StoredAttachment|null>(null);
   const [submittingTicket,setSubmittingTicket]=useState(false);
   const [submitError,setSubmitError]=useState("");
   const fileInput = useRef<HTMLInputElement>(null);
@@ -242,8 +246,14 @@ export default function Home() {
     }
   }
   async function openTicket(ticket:Ticket) {
-    setDetail(ticket); setTicketDetails(null); setTicketDetailsError(""); setShowLogs(false);
-    await loadTicketDetails(ticket.id);
+    setDetail(ticket); setTicketDetails(null); setTicketImages([]); setTicketDetailsError(""); setShowLogs(false);
+    const [detailsResponse,imagesResponse]=await Promise.all([
+      fetch(`/api/tickets/${ticket.id}`,{cache:"no-store"}),
+      fetch(`/api/tickets/${ticket.id}/attachments`,{cache:"no-store"}),
+    ]);
+    if (detailsResponse.ok) setTicketDetails(ticketDetailsFromApi(await detailsResponse.json()));
+    else setTicketDetailsError("Não foi possível carregar a atividade do chamado.");
+    if (imagesResponse.ok) setTicketImages(await imagesResponse.json());
   }
 
   async function cancelExecution() {
@@ -278,7 +288,7 @@ export default function Home() {
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
-    setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true);
+    setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true); setEditingTicketId(null);
     setSubmitError(""); setSubmittingTicket(false);
     const [tagsResponse,attachmentsResponse]=await Promise.all([
       fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"}),
@@ -296,6 +306,33 @@ export default function Home() {
       }));
     } else {
       setSubmitError("A cópia foi aberta, mas não foi possível recuperar as imagens do chamado original.");
+    }
+    setDetail(null); setModal(true);
+  }
+
+  async function editTicket() {
+    if (!detail || detail.status!=="Aberto") return;
+    attachments.forEach(item=>URL.revokeObjectURL(item.preview));
+    setAttachments([]); setAppId(detail.appId); setTitle(detail.title); setDescription(detail.description);
+    setPriority(detail.priority); setQueuePriority(detail.queuePriority);
+    setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
+    setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
+    setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
+    setRepoQuery(""); setRepoTags([]); setDuplicating(false); setEditingTicketId(detail.id);
+    setSubmitError(""); setSubmittingTicket(false);
+    const [tagsResponse,imagesResponse]=await Promise.all([
+      fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"}),
+      fetch(`/api/tickets/${detail.id}/attachments`,{cache:"no-store"}),
+    ]);
+    if (tagsResponse.ok) setRepoTags(await tagsResponse.json());
+    if (imagesResponse.ok) {
+      const stored=await imagesResponse.json() as StoredAttachment[];
+      setAttachments(stored.map(item=>{
+        const binary=atob(item.data); const bytes=new Uint8Array(binary.length);
+        for (let index=0;index<binary.length;index++) bytes[index]=binary.charCodeAt(index);
+        const file=new File([bytes],item.name,{type:item.mimeType});
+        return {file,preview:URL.createObjectURL(file)};
+      }));
     }
     setDetail(null); setModal(true);
   }
@@ -326,7 +363,7 @@ export default function Home() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
-    setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setDataError("");
+    setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setEditingTicketId(null); setDataError("");
     setSubmitError(""); setSubmittingTicket(false); setModal(true);
   }
 
@@ -344,18 +381,19 @@ export default function Home() {
       });
       return { name:file.name, mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
       }));
-      const response = await fetch("/api/tickets", {
-      method:"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:undefined }),
+      const response = await fetch(editingTicketId?`/api/tickets/${editingTicketId}`:"/api/tickets", {
+      method:editingTicketId?"PATCH":"POST", headers:{"content-type":"application/json"},
+      body:JSON.stringify({ edit:Boolean(editingTicketId),applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:(editingTicketId?null:undefined) }),
       });
       const created = await response.json().catch(()=>({}));
       if (!response.ok) {
         setSubmitError(created.error??"Não foi possível criar o chamado.");
         return;
       }
-      setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora",deployStatus:"not_requested" }, ...v]);
+      const savedTicket={ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto" as Status,age:editingTicketId?(tickets.find(item=>item.id===editingTicketId)?.age??"agora"):"agora",deployStatus:String(created.deploy_status??"not_requested") };
+      setTickets(current=>editingTicketId?current.map(item=>item.id===editingTicketId?savedTicket:item):[savedTicket,...current]);
       attachments.forEach(item => URL.revokeObjectURL(item.preview));
-      setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false);
+      setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false); setEditingTicketId(null);
       setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
       setCreateTag(false); setReleaseTag(""); setRepoTags([]);
     } catch {
@@ -529,10 +567,10 @@ export default function Home() {
     </section>
 
     {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onPaste={pasteImages} onMouseDown={e => e.stopPropagation()}>
-      <header><div><p>{duplicating?"DUPLICAR CHAMADO":"NOVO CHAMADO"}</p><h2>{duplicating?"Revise e edite a cópia":"O que precisa ser corrigido?"}</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
-      <label>Aplicação <b>*</b><small>O repositório ficará bloqueado após criar.</small></label>
+      <header><div><p>{editingTicketId?"EDITAR CHAMADO":duplicating?"DUPLICAR CHAMADO":"NOVO CHAMADO"}</p><h2>{editingTicketId?"Atualize os dados enquanto está na fila":duplicating?"Revise e edite a cópia":"O que precisa ser corrigido?"}</h2></div><button type="button" onClick={() => setModal(false)}>×</button></header>
+      <label>Aplicação <b>*</b><small>{editingTicketId?"O repositório não pode ser alterado.":"O repositório ficará bloqueado após criar."}</small></label>
       <div className="picker"><label>⌕ <input value={repoQuery} onChange={e => setRepoQuery(e.target.value)} placeholder="Buscar aplicação ou repositório..." /></label>
-        {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase())).map(a => <button type="button" className={appId === a.id ? "chosen" : ""} onClick={() => chooseApplication(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
+        {applicationList.filter(a => `${a.name} ${a.repo}`.toLowerCase().includes(repoQuery.toLowerCase()) && (!editingTicketId || a.id===appId)).map(a => <button type="button" disabled={Boolean(editingTicketId)} className={appId === a.id ? "chosen" : ""} onClick={() => chooseApplication(a.id)} key={a.id}><i style={{ background: a.color }}>{a.name[0]}</i><div><strong>{a.name}</strong><small>{a.repo}</small></div><em>{a.language}</em><b>{appId === a.id ? "✓" : ""}</b></button>)}
       </div>
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
@@ -548,7 +586,7 @@ export default function Home() {
       {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div></div>}
       {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
       {submitError&&<div className="import-error">{submitError}</div>}
-      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={submittingTicket || !appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>{submittingTicket?"Enviando chamado...":"Criar e enviar ao Codex →"}</button></footer>
+      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={submittingTicket || !appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>{submittingTicket?"Salvando...":editingTicketId?"Salvar alterações":duplicating?"Criar cópia e enviar ao Codex →":"Criar e enviar ao Codex →"}</button></footer>
     </form></div>}
 
     {configApp && <div className="overlay" onMouseDown={() => setConfigApp(null)}><form className="modal config-modal" onSubmit={saveApplicationConfig} onMouseDown={e => e.stopPropagation()}>
@@ -585,7 +623,9 @@ export default function Home() {
     {detail && <div className="overlay ticket-overlay" onMouseDown={() => setDetail(null)}><aside className="detail wide" onMouseDown={e => e.stopPropagation()}>
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
-      <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
+      <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section>
+      {ticketImages.length>0&&<section className="ticket-gallery"><h4>IMAGENS DO CHAMADO</h4><div>{ticketImages.map((image,index)=><button type="button" key={`${image.name}-${index}`} onClick={()=>setPreviewImage(image)}><Image src={`data:${image.mimeType};base64,${image.data}`} alt={image.name} width={180} height={120} unoptimized /><span>{image.name}</span></button>)}</div></section>}
+      <h4>ATIVIDADE DO AGENTE</h4>
       {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao confirmar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"A fila está pausada enquanto o LionWorkForce procura o novo commit na URL de verificação. A confirmação manual continua disponível como alternativa.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
       {!ticketDetails && !ticketDetailsError && <div className="detail-loading">Carregando atividade…</div>}
       {ticketDetailsError&&<div className="import-error">{ticketDetailsError}</div>}
@@ -593,7 +633,8 @@ export default function Home() {
       {pendingApproval && <section className="approval-panel"><h4>APROVAÇÃO NECESSÁRIA</h4><strong>{pendingApproval.reason}</strong><p>{pendingApproval.patch_available?"A correção foi preservada. Ao aprovar, o worker criará um clone limpo, restaurará o patch e continuará somente com as automações escolhidas no chamado.":"Esta execução não possui patch preservado. Se for um chamado antigo, duplique-o para executar novamente. Se houver Pull Request, a autorização deve ser feita no GitHub."}</p><div><button className="approve-ticket" disabled={!pendingApproval.patch_available} onClick={()=>decideApproval("approved")}>Aprovar correção</button><button className="danger" onClick={()=>decideApproval("rejected")}>Rejeitar correção</button></div></section>}
       {codexProgressEvent && <section className="codex-conversation"><div className="conversation-title"><h4>ATIVIDADE PÚBLICA DO CODEX</h4><span>Atualização automática</span></div>{codexTranscript.length>0?codexTranscript.map((item,index)=><article className={item.type} key={`${item.at}-${index}`}><small>{new Date(item.at).toLocaleTimeString("pt-BR")}</small><p>{item.text}</p></article>):<p className="conversation-empty">O Codex ainda não emitiu uma atualização detalhada.</p>}{codexPrompt&&<details><summary>Ver prompt enviado ao Codex</summary><pre>{codexPrompt}</pre></details>}<small className="conversation-note">Mostra mensagens e ações públicas. O raciocínio interno privado do modelo não é disponibilizado.</small></section>}
       {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
-      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar com imagens</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
+      <footer className="ticket-actions"><div>{detail.status==="Aberto"&&<button className="approve-ticket" onClick={editTicket}>Editar chamado</button>}<button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar com imagens</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
     </aside></div>}
+    {previewImage&&<div className="overlay image-preview" onClick={()=>setPreviewImage(null)}><section onClick={event=>event.stopPropagation()}><header><strong>{previewImage.name}</strong><button onClick={()=>setPreviewImage(null)}>×</button></header><Image src={`data:${previewImage.mimeType};base64,${previewImage.data}`} alt={previewImage.name} width={1400} height={1000} unoptimized /></section></div>}
   </main>;
 }

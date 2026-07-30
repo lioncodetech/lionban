@@ -5,6 +5,26 @@ import { transaction } from "@/lib/db";
 const moveInput = z.object({
   status: z.enum(["open", "analyzing", "fixing", "testing", "approval", "completed", "failed"]),
 });
+const attachmentInput=z.object({
+  name:z.string().min(1).max(180),
+  mimeType:z.enum(["image/png","image/jpeg","image/webp","image/gif"]),
+  size:z.number().int().positive().max(5*1024*1024),
+  data:z.string().max(7_500_000),
+});
+const editInput=z.object({
+  edit:z.literal(true),
+  title:z.string().trim().min(3).max(160),
+  description:z.string().trim().min(10).max(20000),
+  priority:z.enum(["low","medium","high","critical"]),
+  queuePriority:z.number().int().min(1).max(10),
+  autoCommit:z.boolean(),
+  autoPush:z.boolean(),
+  autoPullRequest:z.boolean(),
+  autoDeploy:z.boolean(),
+  createTag:z.boolean(),
+  releaseTag:z.string().trim().regex(/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/).nullable(),
+  attachments:z.array(attachmentInput).max(5),
+});
 
 export async function GET(_request:Request, context:{params:Promise<{id:string}>}) {
   const {id}=await context.params;
@@ -26,6 +46,40 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const ticketId = Number(id);
   if (!Number.isSafeInteger(ticketId) || ticketId < 1) return NextResponse.json({error:"Chamado inválido"},{status:400});
   const body=await request.json();
+  if (body.edit===true) {
+    const parsed=editInput.safeParse(body);
+    if (!parsed.success) return NextResponse.json({error:"Dados de edição inválidos",details:parsed.error.flatten()},{status:400});
+    if (parsed.data.autoPullRequest&&(!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Pull Request exige commit e push"},{status:400});
+    if (parsed.data.autoDeploy&&(!parsed.data.autoCommit||!parsed.data.autoPush||parsed.data.autoPullRequest)) return NextResponse.json({error:"Deploy exige integração direta"},{status:400});
+    if (parsed.data.createTag&&(!parsed.data.releaseTag||parsed.data.autoPullRequest||!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Configuração de tag inválida"},{status:400});
+    const edited=await transaction(async client=>{
+      const execution=await client.query("SELECT id FROM lwf_executions WHERE ticket_id=$1 AND state='queued' ORDER BY attempt DESC LIMIT 1 FOR UPDATE",[ticketId]);
+      if (!execution.rowCount) return "NOT_OPEN";
+      const current=await client.query("SELECT id FROM lwf_tickets WHERE id=$1 AND status='open' FOR UPDATE",[ticketId]);
+      if (!current.rowCount) return "NOT_OPEN";
+      const updated=await client.query(`UPDATE lwf_tickets SET title=$1,description=$2,priority=$3,queue_priority=$4,
+        auto_commit=$5,auto_push=$6,auto_pull_request=$7,auto_deploy=$8,create_tag=$9,release_tag=$10,updated_at=now()
+        WHERE id=$11 RETURNING *`,[
+        parsed.data.title,parsed.data.description,parsed.data.priority,parsed.data.queuePriority,
+        parsed.data.autoCommit,parsed.data.autoPush,parsed.data.autoPullRequest,parsed.data.autoDeploy,
+        parsed.data.createTag,parsed.data.releaseTag,ticketId,
+      ]);
+      await client.query("DELETE FROM lwf_artifacts WHERE ticket_id=$1 AND kind='screenshot'",[ticketId]);
+      for (const attachment of parsed.data.attachments) {
+        const content=Buffer.from(attachment.data,"base64");
+        if (content.byteLength!==attachment.size) throw new Error("ATTACHMENT_SIZE_MISMATCH");
+        await client.query(`INSERT INTO lwf_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
+          VALUES($1,'screenshot',$2,$3,$4,$5,$6)`,[
+          ticketId,attachment.name,`db://${ticketId}/${attachment.name}`,attachment.mimeType,attachment.size,content,
+        ]);
+      }
+      await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'ticket.edited','Chamado editado enquanto aguardava na fila')",[ticketId]);
+      return updated.rows[0];
+    });
+    return edited==="NOT_OPEN"
+      ? NextResponse.json({error:"O chamado já saiu da fila e não pode mais ser editado."},{status:409})
+      : NextResponse.json(edited);
+  }
   if (body.deployCompleted === true) {
     const result=await transaction(async client=>{
       const updated=await client.query(`UPDATE lwf_tickets SET deploy_status='completed',deploy_updated_at=now(),updated_at=now()
@@ -135,6 +189,9 @@ export async function POST(request:Request, context:{params:Promise<{id:string}>
       ]);
       await client.query("INSERT INTO lwf_executions(ticket_id,application_id) VALUES($1,$2)",[created.rows[0].id,ticket.application_id]);
       await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'ticket.created','Chamado duplicado e enfileirado sem logs anteriores')",[created.rows[0].id]);
+      await client.query(`INSERT INTO lwf_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
+        SELECT $1,kind,name,'db://' || $1::text || '/' || name,mime_type,size_bytes,content
+        FROM lwf_artifacts WHERE ticket_id=$2 AND kind='screenshot'`,[created.rows[0].id,ticketId]);
       return created.rows[0];
     });
     return cloned?NextResponse.json(cloned,{status:201}):NextResponse.json({error:"Chamado não encontrado"},{status:404});
