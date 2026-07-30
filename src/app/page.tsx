@@ -98,11 +98,20 @@ export default function Home() {
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
   useEffect(() => {
+    let active=true;
+    let initialLoad=true;
+    let refreshing=false;
     async function loadData() {
+      if (refreshing) return;
+      refreshing=true;
       try {
-        const [appsResponse, ticketsResponse] = await Promise.all([fetch("/api/applications"), fetch("/api/tickets")]);
+        const [appsResponse, ticketsResponse] = await Promise.all([
+          fetch("/api/applications",{cache:"no-store"}),
+          fetch("/api/tickets",{cache:"no-store"}),
+        ]);
         if (!appsResponse.ok || !ticketsResponse.ok) throw new Error("Falha ao carregar os dados");
         const [appRows, ticketRows] = await Promise.all([appsResponse.json(), ticketsResponse.json()]);
+        if (!active) return;
         setApplicationList(appRows.map((row: Record<string, unknown>) => ({
           id:String(row.id), name:String(row.name), repo:String(row.full_name),
           language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
@@ -114,11 +123,18 @@ export default function Home() {
           priority:priorityFromApi[String(row.priority)] ?? "Média",queuePriority:Number(row.queue_priority ?? 5),status:statusFromApi[String(row.status)] ?? "Falhou",
           age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),
         })));
+        setDataError("");
       } catch {
-        setDataError("Não foi possível carregar os dados do PostgreSQL.");
-      } finally { setLoadingData(false); }
+        if (active && initialLoad) setDataError("Não foi possível carregar os dados do PostgreSQL.");
+      } finally {
+        if (active && initialLoad) setLoadingData(false);
+        initialLoad=false;
+        refreshing=false;
+      }
     }
     loadData();
+    const timer=window.setInterval(loadData,5000);
+    return ()=>{ active=false; window.clearInterval(timer); };
   }, []);
 
   useEffect(() => {
