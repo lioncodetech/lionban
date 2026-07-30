@@ -9,6 +9,7 @@ const automationOptionsVersion = "004_lb_automation_options";
 const releaseTagsVersion = "005_lb_release_tags";
 const approvalResumeVersion = "006_lb_approval_resume";
 const queuePriorityVersion = "007_lb_queue_priority";
+const workerPauseVersion = "008_lb_worker_pause";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -82,6 +83,19 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [queuePriorityVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${queuePriorityVersion} aplicada`);
+    }
+    const workerPauseApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [workerPauseVersion]);
+    if (!workerPauseApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query(`CREATE TABLE IF NOT EXISTS lb_worker_control (
+        singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+        queue_paused boolean NOT NULL DEFAULT false,
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )`);
+      await client.query("INSERT INTO lb_worker_control(singleton) VALUES(true) ON CONFLICT(singleton) DO NOTHING");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [workerPauseVersion]);
+      await client.query("COMMIT");
+      console.log(`Migração ${workerPauseVersion} aplicada`);
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

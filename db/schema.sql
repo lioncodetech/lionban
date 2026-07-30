@@ -98,3 +98,9 @@ CREATE TABLE lb_worker_heartbeats (
   codex_authenticated boolean NOT NULL DEFAULT false,
   status_message text
 );
+CREATE TABLE lb_worker_control (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  queue_paused boolean NOT NULL DEFAULT false,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+INSERT INTO lb_worker_control(singleton) VALUES(true);

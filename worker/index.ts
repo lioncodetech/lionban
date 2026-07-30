@@ -250,6 +250,13 @@ async function claim():Promise<Job|null> {
   const client = await db.connect();
   try {
     await client.query("BEGIN");
+    const control=await client.query<{queue_paused:boolean}>(
+      "SELECT queue_paused FROM lb_worker_control WHERE singleton=true FOR SHARE",
+    );
+    if (control.rows[0]?.queue_paused) {
+      await client.query("ROLLBACK");
+      return null;
+    }
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id

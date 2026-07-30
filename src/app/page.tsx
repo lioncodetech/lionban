@@ -11,7 +11,7 @@ type App = {
 type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
-type AgentHealth = { workerOnline: boolean; codexAuthenticated: boolean; lastSeen: string | null; message: string };
+type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
 type TicketApproval = { id:string; reason:string; decision:string|null; decided_at:string|null; created_at:string; patch_available:boolean };
@@ -75,7 +75,7 @@ export default function Home() {
   const [importError, setImportError] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [draggedTicket, setDraggedTicket] = useState<number | null>(null);
-  const [agentHealth, setAgentHealth] = useState<AgentHealth>({ workerOnline:false, codexAuthenticated:false, lastSeen:null, message:"Verificando o executor…" });
+  const [agentHealth, setAgentHealth] = useState<AgentHealth>({ workerOnline:false,codexAuthenticated:false,queuePaused:false,lastSeen:null,message:"Verificando o executor…" });
   const [autoCommit, setAutoCommit] = useState(true);
   const [autoPush, setAutoPush] = useState(true);
   const [autoPullRequest, setAutoPullRequest] = useState(false);
@@ -162,13 +162,28 @@ export default function Home() {
         const health = await response.json();
         if (active) setAgentHealth(health);
       } catch {
-        if (active) setAgentHealth({ workerOnline:false, codexAuthenticated:false, lastSeen:null, message:"Não foi possível consultar o executor." });
+        if (active) setAgentHealth({ workerOnline:false,codexAuthenticated:false,queuePaused:false,lastSeen:null,message:"Não foi possível consultar o executor." });
       }
     }
     loadHealth();
     const timer = window.setInterval(loadHealth, 15000);
     return () => { active = false; window.clearInterval(timer); };
   }, []);
+
+  async function toggleQueuePause() {
+    const paused=!agentHealth.queuePaused;
+    const response=await fetch("/api/health",{
+      method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({paused}),
+    });
+    const result=await response.json().catch(()=>({}));
+    if (!response.ok) { setDataError(result.error??"Não foi possível alterar a pausa da fila."); return; }
+    setAgentHealth(current=>({
+      ...current,queuePaused:Boolean(result.queuePaused),
+      message:result.queuePaused
+        ? "Fila pausada. A execução atual pode terminar; novos chamados não serão iniciados."
+        : "Executor pronto para receber chamados.",
+    }));
+  }
 
   async function moveTicket(ticketId: number, status: Status) {
     const previous = tickets.find(ticket => ticket.id === ticketId);
@@ -371,7 +386,7 @@ export default function Home() {
         <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ <span>Quadro</span></button>
         <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{applicationList.length}</b></button>
       </nav>
-      <div className={`agent ${agentHealth.workerOnline && agentHealth.codexAuthenticated ? "online" : "offline"}`}><strong><i /> {agentHealth.workerOnline ? (agentHealth.codexAuthenticated ? "Codex conectado" : "Codex sem autenticação") : "Worker desconectado"}</strong><p>{agentHealth.message}</p>{agentHealth.lastSeen && <small>Último sinal: {new Date(agentHealth.lastSeen).toLocaleTimeString("pt-BR")}</small>}</div>
+      <div className={`agent ${agentHealth.queuePaused?"paused":agentHealth.workerOnline&&agentHealth.codexAuthenticated?"online":"offline"}`}><strong><i /> {agentHealth.queuePaused?"Fila pausada":agentHealth.workerOnline?(agentHealth.codexAuthenticated?"Codex conectado":"Codex sem autenticação"):"Worker desconectado"}</strong><p>{agentHealth.message}</p>{agentHealth.lastSeen&&<small>Último sinal: {new Date(agentHealth.lastSeen).toLocaleTimeString("pt-BR")}</small>}<button className="pause-queue" onClick={toggleQueuePause}>{agentHealth.queuePaused?"▶ Retomar fila":"Ⅱ Pausar fila"}</button></div>
       <div className="user"><i>ES</i><div><strong>Elder</strong><span>Administrador</span></div><b>•••</b></div>
     </aside>
 
@@ -386,7 +401,7 @@ export default function Home() {
           <div><span>Em andamento</span><strong>{tickets.filter(t => ["Analisando","Corrigindo","Testando"].includes(t.status)).length}</strong><small>execuções ativas</small></div>
           <div><span>Aguardando você</span><strong>{tickets.filter(t => t.status === "Aguardando aprovação").length}</strong><small>aprovações pendentes</small></div>
           <div><span>Concluídos</span><strong>{tickets.filter(t => t.status === "Concluído").length}</strong><small>no histórico</small></div>
-          <div><span>Executor</span><strong className={agentHealth.workerOnline && agentHealth.codexAuthenticated ? "ok" : "warning"}>{agentHealth.workerOnline ? (agentHealth.codexAuthenticated ? "Operacional" : "Sem login") : "Offline"}</strong><small>{agentHealth.message}</small></div>
+          <div><span>Executor</span><strong className={agentHealth.queuePaused?"paused-state":agentHealth.workerOnline&&agentHealth.codexAuthenticated?"ok":"warning"}>{agentHealth.queuePaused?"Pausado":agentHealth.workerOnline?(agentHealth.codexAuthenticated?"Operacional":"Sem login"):"Offline"}</strong><small>{agentHealth.message}</small></div>
         </div>
         {dataError && <div className="import-error">{dataError}</div>}
         {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className={`column ${draggedTicket !== null ? "drop-enabled" : ""}`} key={status} onDragOver={event => event.preventDefault()} onDrop={() => { if (draggedTicket !== null) moveTicket(draggedTicket, status); setDraggedTicket(null); }}>
