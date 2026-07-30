@@ -25,6 +25,8 @@ O login usa `ADMIN_USERNAME` (padrão `admin` quando ausente) e `ADMIN_PASSWORD_
 
 Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos processos daquele repositório. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis os segredos internos do LionWorkForce.
 
+Ao criar ou editar um chamado, é possível anexar até cinco imagens. Clique na miniatura de uma imagem anexada para ampliá-la em um popup; o mesmo recurso está disponível na galeria do detalhe do chamado. Clique fora da imagem ou no botão de fechar para retornar.
+
 O Deployment Trigger do EasyPanel apenas confirma que a solicitação foi aceita. Por isso, o chamado mostra o deploy como em curso até o usuário confirmar, no histórico do EasyPanel, que ele terminou; falhas HTTP ao disparar o webhook são registradas automaticamente.
 
 Cada build grava o SHA do commit em `APP_COMMIT_SHA`. O endpoint público `GET /api/version`
