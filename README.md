@@ -25,6 +25,10 @@ Em **Aplicações → Configurar**, cada repositório pode receber comandos pró
 
 O Deployment Trigger do EasyPanel apenas confirma que a solicitação foi aceita. Por isso, o chamado mostra o deploy como em curso até o usuário confirmar, no histórico do EasyPanel, que ele terminou; falhas HTTP ao disparar o webhook são registradas automaticamente.
 
+Cada build grava o SHA do commit em `APP_COMMIT_SHA`. O endpoint público `GET /api/version`
+responde com `status: "ready"` e esse SHA, sempre com `Cache-Control: no-store`, para que o
+LionWorkForce acompanhe automaticamente quando o novo deploy entrou no ar.
+
 ## Renomeação para LionWorkForce
 
 A migração `010_lwf_rename` preserva os dados e renomeia tabelas, tipos, sequências, índices e constraints de `lb_*` para `lwf_*`. Views `lb_*` de compatibilidade são mantidas durante a transição entre versões do web e do worker.
