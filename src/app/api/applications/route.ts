@@ -17,7 +17,8 @@ const importInput = z.object({
 export async function GET() {
   const result = await query(`SELECT id,connection_id,github_repo_id,name,full_name,default_branch,language,clone_url,
     install_command,test_command,lint_command,build_command,enabled,created_at,
-    deploy_webhook_url IS NOT NULL deploy_configured
+    deploy_webhook_url IS NOT NULL deploy_configured,
+    COALESCE(ARRAY(SELECT jsonb_object_keys(test_environment)),ARRAY[]::text[]) test_environment_keys
     FROM lb_applications WHERE enabled=true ORDER BY name`);
   return NextResponse.json(result.rows);
 }

@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
@@ -75,7 +75,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
     const child=spawn(command,args,{
       // EasyPanel's container is the isolation boundary. Its nested Linux
       // sandbox cannot create namespaces. Never expose worker secrets here.
-      cwd,env:codexEnvironment(),
+      cwd,env:{...codexEnvironment(),...job.test_environment},
       shell:false,windowsHide:true,stdio:["ignore","pipe","pipe"],
     });
     let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Iniciando o Codex"; let lastActivityAt=Date.now(); let receivedStructuredEvent=false;
@@ -185,9 +185,16 @@ async function createPullRequest(job:Job, branch:string) {
 }
 async function triggerDeploy(job:Job) {
   if (!job.deploy_webhook_url) throw new Error("DEPLOY_WEBHOOK_NOT_CONFIGURED");
-  const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
-  if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
-  await event(job,"deploy.triggered","Deploy automático solicitado ao EasyPanel");
+  await db.query("UPDATE lb_tickets SET deploy_status='in_progress',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+  await event(job,"deploy.started","Deploy solicitado ao EasyPanel; aguardando confirmação de conclusão");
+  try {
+    const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
+    if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
+    await event(job,"deploy.triggered","EasyPanel aceitou a solicitação de deploy");
+  } catch(error) {
+    await db.query("UPDATE lb_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
+    throw error;
+  }
 }
 async function requestApproval(job:Job, reason:string) {
   await db.query("UPDATE lb_tickets SET status='approval',updated_at=now() WHERE id=$1",[job.ticket_id]);
@@ -258,7 +265,7 @@ async function claim():Promise<Job|null> {
       return null;
     }
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
-      a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,
+      a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lb_executions e JOIN lb_tickets t ON t.id=e.ticket_id JOIN lb_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
@@ -303,7 +310,7 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   }
   await synchronizePackageVersion(job,repo);
   await git(["add","-A"],repo);
-  await git(["commit","-m",`fix: resolve chamado #${job.ticket_id}`],repo);
+  await git(["commit","-m",job.title.trim().slice(0,200)],repo);
   await event(job,"commit.created","Commit automático criado");
   if (!job.auto_push) {
     await savePatch(job,repo,true);
@@ -326,7 +333,7 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   }
   await git(["checkout",safe(job.default_branch)],repo);
   await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);
-  await git(["merge","--no-ff",branch,"-m",`merge: LionBan chamado #${job.ticket_id}`],repo);
+  await git(["merge","--no-ff",branch,"-m",job.title.trim().slice(0,200)],repo);
   await git(["push","origin",safe(job.default_branch)],repo);
   if (job.create_tag && job.release_tag) {
     await git(["tag","-a",safe(job.release_tag),"-m",`Release ${job.release_tag} - LionBan chamado #${job.ticket_id}`],repo);
@@ -353,10 +360,14 @@ async function processJob(job:Job) {
     await db.query("UPDATE lb_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
     await assertNotCancelled(job);
-    if (job.install_command) {
-      await event(job,"dependencies.installing","Instalando dependências configuradas da aplicação",{command:job.install_command});
-      const [bin,...args]=job.install_command.split(/\s+/);
-      await run(bin,args,repo,{NODE_ENV:"development",NPM_CONFIG_PRODUCTION:"false",NPM_CONFIG_INCLUDE:"dev"});
+    let installCommand=job.install_command;
+    if (!installCommand) {
+      try { await readFile(path.join(repo,"package-lock.json")); installCommand="npm ci"; } catch { /* projeto sem package-lock */ }
+    }
+    if (installCommand) {
+      await event(job,"dependencies.installing","Instalando dependências da aplicação",{command:installCommand,automatic:!job.install_command});
+      const [bin,...args]=installCommand.split(/\s+/);
+      await run(bin,args,repo,{NODE_ENV:"development",NPM_CONFIG_PRODUCTION:"false",NPM_CONFIG_INCLUDE:"dev",...job.test_environment});
       await event(job,"dependencies.installed","Dependências da aplicação instaladas");
       await assertNotCancelled(job);
     }
@@ -378,7 +389,7 @@ async function processJob(job:Job) {
     for (const command of validationCommands) {
       const {bin,args}=commandParts(command);
       try {
-        await run(bin,args,repo);
+        await run(bin,args,repo,job.test_environment);
         await event(job,"validation.baseline_passed",`Validação inicial passou: ${command}`,{command});
       } catch(error) {
         baselineFailures.set(command,validationSignature(error,repo));
@@ -442,7 +453,7 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     for (const command of validationCommands) {
       const {bin,args}=commandParts(command);
       try {
-        await run(bin,args,repo);
+        await run(bin,args,repo,job.test_environment);
         await event(job,"validation.passed",`Validação passou após a correção: ${command}`,{command});
       } catch(error) {
         const currentSignature=validationSignature(error,repo);
@@ -483,6 +494,32 @@ Não altere a implementação, não faça commit, push, merge ou deploy.`;
     await event(job,cancelled?"execution.cancelled":"execution.failed",cancelled?"Execução cancelada":"A execução falhou",cancelled?{}:{error:message.slice(0,1000)});
   } finally { await rm(root,{recursive:true,force:true}); }
 }
+async function applyRetentionPolicy() {
+  const client=await db.connect();
+  try {
+    await client.query("BEGIN");
+    const settings=await client.query<{archive_after_days:number;delete_after_days:number}>(
+      "SELECT archive_after_days,delete_after_days FROM lb_settings WHERE singleton=true FOR SHARE",
+    );
+    const archiveDays=settings.rows[0]?.archive_after_days ?? 7;
+    const deleteDays=settings.rows[0]?.delete_after_days ?? 15;
+    await client.query(`UPDATE lb_tickets SET archived_at=now()
+      WHERE archived_at IS NULL AND status IN ('completed','failed','cancelled')
+        AND updated_at <= now()-($1::text || ' days')::interval`,[archiveDays]);
+    const expired=await client.query<{id:number}>(`SELECT id FROM lb_tickets
+      WHERE status IN ('completed','failed','cancelled')
+        AND updated_at <= now()-($1::text || ' days')::interval FOR UPDATE`,[deleteDays]);
+    for (const row of expired.rows) {
+      await client.query("DELETE FROM lb_approvals WHERE ticket_id=$1",[row.id]);
+      await client.query("DELETE FROM lb_executions WHERE ticket_id=$1",[row.id]);
+      await client.query("DELETE FROM lb_tickets WHERE id=$1",[row.id]);
+    }
+    await client.query("COMMIT");
+  } catch(error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally { client.release(); }
+}
 async function main() {
   console.log(`${workerId} iniciado`);
   await recoverInterruptedJobs();
@@ -490,6 +527,9 @@ async function main() {
   await heartbeat(status.authenticated,status.message);
   const timer=setInterval(() => heartbeat(status.authenticated,status.message).catch(error => console.error("heartbeat:",error)),10000);
   timer.unref();
+  await applyRetentionPolicy();
+  const retentionTimer=setInterval(()=>applyRetentionPolicy().catch(error=>console.error("retention:",error)),60*60*1000);
+  retentionTimer.unref();
   for (;;) { const job=await claim(); if (job) await processJob(job); else await new Promise(r=>setTimeout(r,3000)); }
 }
 main().catch(error => { console.error(error); process.exit(1); });

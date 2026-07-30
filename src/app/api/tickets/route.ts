@@ -21,9 +21,12 @@ const ticketInput = z.object({
     data: z.string().max(7_500_000),
   })).max(5).default([]),
 });
-export async function GET() {
+export async function GET(request:Request) {
+  const archived=new URL(request.url).searchParams.get("archived")==="true";
   const result = await query(`SELECT t.*, a.name application_name, a.full_name repository
-    FROM lb_tickets t JOIN lb_applications a ON a.id=t.application_id ORDER BY t.created_at DESC`);
+    FROM lb_tickets t JOIN lb_applications a ON a.id=t.application_id
+    WHERE ${archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL"}
+    ORDER BY t.created_at DESC`);
   return NextResponse.json(result.rows);
 }
 export async function POST(request: Request) {

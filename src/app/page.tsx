@@ -6,9 +6,9 @@ import Image from "next/image";
 type Status = "Aberto" | "Analisando" | "Corrigindo" | "Testando" | "Aguardando aprovação" | "Concluído" | "Falhou";
 type App = {
   id:string; name:string; repo:string; language:string; branch:string; color:string; deployConfigured:boolean;
-  installCommand:string; testCommand:string; lintCommand:string; buildCommand:string;
+  installCommand:string; testCommand:string; lintCommand:string; buildCommand:string; testEnvironmentKeys:string[];
 };
-type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string };
+type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string; deployStatus:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
 type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string };
@@ -19,6 +19,7 @@ type TicketDetails = {
   events:TicketEvent[]; executions:TicketExecution[]; approvals:TicketApproval[];
   auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean;
   create_tag:boolean; release_tag:string|null;
+  deploy_status:string; deploy_updated_at:string|null;
 };
 type RepoTag = { name:string; commit:{sha:string} };
 type CodexTranscriptItem = { at:string; type:string; text:string };
@@ -35,7 +36,8 @@ const eventLabels:Record<string,string> = {
   "execution.recovered":"Execução recuperada", "execution.retried":"Nova tentativa iniciada", "execution.failed":"Execução falhou",
   "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",
   "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
-  "tag.created":"Versão criada", "deploy.triggered":"Deploy solicitado", "patch.prepared":"Correção preparada",
+  "tag.created":"Versão criada", "deploy.started":"Deploy iniciado", "deploy.triggered":"Solicitação de deploy aceita", "deploy.completed":"Deploy concluído", "patch.prepared":"Correção preparada",
+  "dependencies.installing":"Instalando dependências", "dependencies.installed":"Dependências instaladas",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
   "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
   "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
@@ -51,6 +53,7 @@ const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
   auto_commit:Boolean(result.auto_commit),auto_push:Boolean(result.auto_push),
   auto_pull_request:Boolean(result.auto_pull_request),auto_deploy:Boolean(result.auto_deploy),
   create_tag:Boolean(result.create_tag),release_tag:result.release_tag ? String(result.release_tag) : null,
+  deploy_status:String(result.deploy_status ?? "not_requested"),deploy_updated_at:result.deploy_updated_at ? String(result.deploy_updated_at) : null,
 });
 
 export default function Home() {
@@ -58,7 +61,7 @@ export default function Home() {
   const [applicationList, setApplicationList] = useState<App[]>([]);
   const [loadingData, setLoadingData] = useState(true);
   const [dataError, setDataError] = useState("");
-  const [view, setView] = useState<"board" | "apps">("board");
+  const [view, setView] = useState<"board" | "apps" | "archive" | "settings">("board");
   const [modal, setModal] = useState(false);
   const [detail, setDetail] = useState<Ticket | null>(null);
   const [query, setQuery] = useState("");
@@ -87,6 +90,9 @@ export default function Home() {
   const [testCommand, setTestCommand] = useState("");
   const [lintCommand, setLintCommand] = useState("");
   const [buildCommand, setBuildCommand] = useState("");
+  const [testEnvironmentText,setTestEnvironmentText]=useState("");
+  const [archiveAfterDays,setArchiveAfterDays]=useState(7);
+  const [deleteAfterDays,setDeleteAfterDays]=useState(15);
   const [ticketDetails, setTicketDetails] = useState<TicketDetails | null>(null);
   const [showLogs, setShowLogs] = useState(false);
   const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
@@ -96,7 +102,7 @@ export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? {
     id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
-    deployConfigured:false,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",
+    deployConfigured:false,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],
   };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -110,7 +116,7 @@ export default function Home() {
       try {
         const [appsResponse, ticketsResponse] = await Promise.all([
           fetch("/api/applications",{cache:"no-store"}),
-          fetch("/api/tickets",{cache:"no-store"}),
+          fetch(view==="archive"?"/api/tickets?archived=true":"/api/tickets",{cache:"no-store"}),
         ]);
         if (!appsResponse.ok || !ticketsResponse.ok) throw new Error("Falha ao carregar os dados");
         const [appRows, ticketRows] = await Promise.all([appsResponse.json(), ticketsResponse.json()]);
@@ -120,11 +126,12 @@ export default function Home() {
           language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
           installCommand:String(row.install_command ?? ""),testCommand:String(row.test_command ?? ""),
           lintCommand:String(row.lint_command ?? ""),buildCommand:String(row.build_command ?? ""),
+          testEnvironmentKeys:Array.isArray(row.test_environment_keys)?row.test_environment_keys.map(String):[],
         })));
         setTickets(ticketRows.map((row: Record<string, unknown>) => ({
           id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
           priority:priorityFromApi[String(row.priority)] ?? "Média",queuePriority:Number(row.queue_priority ?? 5),status:statusFromApi[String(row.status)] ?? "Falhou",
-          age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),
+          age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),deployStatus:String(row.deploy_status ?? "not_requested"),
         })));
         setDataError("");
       } catch {
@@ -138,7 +145,15 @@ export default function Home() {
     loadData();
     const timer=window.setInterval(loadData,5000);
     return ()=>{ active=false; window.clearInterval(timer); };
-  }, []);
+  }, [view]);
+
+  useEffect(()=>{
+    if (view!=="settings") return;
+    fetch("/api/settings",{cache:"no-store"}).then(response=>response.json()).then(result=>{
+      setArchiveAfterDays(Number(result.archive_after_days ?? 7));
+      setDeleteAfterDays(Number(result.delete_after_days ?? 15));
+    }).catch(()=>setDataError("Não foi possível carregar as configurações."));
+  },[view]);
 
   useEffect(() => {
     if (!detail) return;
@@ -295,7 +310,7 @@ export default function Home() {
     });
     if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
     const created = await response.json();
-    setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora" }, ...v]);
+    setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora",deployStatus:"not_requested" }, ...v]);
     attachments.forEach(item => URL.revokeObjectURL(item.preview));
     setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
@@ -348,6 +363,7 @@ export default function Home() {
       language: result.language ?? "Não detectada", branch: result.default_branch, color:"#236b50", deployConfigured:Boolean(result.deploy_configured),
       installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
+      testEnvironmentKeys:[],
     };
     setApplicationList(current => [...current.filter(item => item.repo !== imported.repo), imported]);
     setImporting(null); setImportModal(false); setView("apps");
@@ -361,6 +377,9 @@ export default function Home() {
         deployWebhookUrl:removeDeployWebhook ? null : (deployWebhookUrl.trim() || undefined),
         installCommand:installCommand.trim(),testCommand:testCommand.trim(),
         lintCommand:lintCommand.trim(),buildCommand:buildCommand.trim(),
+        testEnvironment:testEnvironmentText.trim()?Object.fromEntries(testEnvironmentText.split(/\r?\n/).filter(line=>line.includes("=")).map(line=>{
+          const separator=line.indexOf("="); return [line.slice(0,separator).trim(),line.slice(separator+1)];
+        })):undefined,
       }),
     });
     if (!response.ok) { setDataError("Não foi possível salvar a configuração da aplicação."); return; }
@@ -369,8 +388,23 @@ export default function Home() {
       ...item,deployConfigured:Boolean(result.deploy_configured),
       installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
+      testEnvironmentKeys:Array.isArray(result.test_environment_keys)?result.test_environment_keys.map(String):item.testEnvironmentKeys,
     } : item));
-    setConfigApp(null); setDeployWebhookUrl(""); setRemoveDeployWebhook(false);
+    setConfigApp(null); setDeployWebhookUrl(""); setRemoveDeployWebhook(false); setTestEnvironmentText("");
+  }
+
+  async function saveSettings(e:FormEvent) {
+    e.preventDefault();
+    const response=await fetch("/api/settings",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({archiveAfterDays,deleteAfterDays})});
+    const result=await response.json().catch(()=>({}));
+    setDataError(response.ok?"":result.error??"Não foi possível salvar as configurações.");
+  }
+
+  async function confirmDeployCompleted() {
+    if (!detail) return;
+    const response=await fetch(`/api/tickets/${detail.id}`,{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({deployCompleted:true})});
+    if (!response.ok) return setDataError("Não foi possível confirmar o deploy.");
+    await loadTicketDetails(detail.id);
   }
 
   const codexProgressEvent=ticketDetails?.events.findLast(event=>event.kind==="codex.started");
@@ -385,6 +419,8 @@ export default function Home() {
       <nav>
         <button className={view === "board" ? "active" : ""} onClick={() => setView("board")}>▦ <span>Quadro</span></button>
         <button className={view === "apps" ? "active" : ""} onClick={() => setView("apps")}>⌘ <span>Aplicações</span><b>{applicationList.length}</b></button>
+        <button className={view === "archive" ? "active" : ""} onClick={() => setView("archive")}>◫ <span>Arquivados</span></button>
+        <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>⚙ <span>Configurações</span></button>
       </nav>
       <div className={`agent ${agentHealth.queuePaused?"paused":agentHealth.workerOnline&&agentHealth.codexAuthenticated?"online":"offline"}`}><strong><i /> {agentHealth.queuePaused?"Fila pausada":agentHealth.workerOnline?(agentHealth.codexAuthenticated?"Codex conectado":"Codex sem autenticação"):"Worker desconectado"}</strong><p>{agentHealth.message}</p>{agentHealth.lastSeen&&<small>Último sinal: {new Date(agentHealth.lastSeen).toLocaleTimeString("pt-BR")}</small>}<button className="pause-queue" onClick={toggleQueuePause}>{agentHealth.queuePaused?"▶ Retomar fila":"Ⅱ Pausar fila"}</button></div>
       <div className="user"><i>ES</i><div><strong>Elder</strong><span>Administrador</span></div><b>•••</b></div>
@@ -392,17 +428,17 @@ export default function Home() {
 
     <section className="content">
       <header>
-        <div><p>{view === "board" ? "CENTRO DE CORREÇÕES" : "REPOSITÓRIOS AUTORIZADOS"}</p><h1>{view === "board" ? "Quadro de chamados" : "Aplicações"}</h1></div>
+        <div><p>{view==="board"?"CENTRO DE CORREÇÕES":view==="apps"?"REPOSITÓRIOS AUTORIZADOS":view==="archive"?"HISTÓRICO AUTOMÁTICO":"PREFERÊNCIAS"}</p><h1>{view==="board"?"Quadro de chamados":view==="apps"?"Aplicações":view==="archive"?"Chamados arquivados":"Configurações"}</h1></div>
         <div className="actions"><label>⌕ <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Buscar chamado..." /></label><button className="primary" onClick={openNewTicket}>＋ Novo chamado</button></div>
       </header>
 
-      {view === "board" ? <>
-        <div className="stats">
+      {view === "board" || view==="archive" ? <>
+        {view==="board" && <div className="stats">
           <div><span>Em andamento</span><strong>{tickets.filter(t => ["Analisando","Corrigindo","Testando"].includes(t.status)).length}</strong><small>execuções ativas</small></div>
           <div><span>Aguardando você</span><strong>{tickets.filter(t => t.status === "Aguardando aprovação").length}</strong><small>aprovações pendentes</small></div>
           <div><span>Concluídos</span><strong>{tickets.filter(t => t.status === "Concluído").length}</strong><small>no histórico</small></div>
           <div><span>Executor</span><strong className={agentHealth.queuePaused?"paused-state":agentHealth.workerOnline&&agentHealth.codexAuthenticated?"ok":"warning"}>{agentHealth.queuePaused?"Pausado":agentHealth.workerOnline?(agentHealth.codexAuthenticated?"Operacional":"Sem login"):"Offline"}</strong><small>{agentHealth.message}</small></div>
-        </div>
+        </div>}
         {dataError && <div className="import-error">{dataError}</div>}
         {loadingData ? <div className="loading-board">Carregando seus chamados…</div> : <div className="board">{statuses.map(status => <section className={`column ${draggedTicket !== null ? "drop-enabled" : ""}`} key={status} onDragOver={event => event.preventDefault()} onDrop={() => { if (draggedTicket !== null) moveTicket(draggedTicket, status); setDraggedTicket(null); }}>
           <header><i className={`status s${statuses.indexOf(status)}`} /><strong>{status}</strong><b>{visible.filter(t => t.status === status).length}</b></header>
@@ -414,7 +450,7 @@ export default function Home() {
           </button>)}
           {!visible.some(t => t.status === status) && <div className="empty">Nenhum chamado</div>}
         </section>)}</div>}
-      </> : <div className="apps">{applicationList.map(a => <article key={a.id}>
+      </> : view==="apps" ? <div className="apps">{applicationList.map(a => <article key={a.id}>
         <div className="app-icon" style={{ background: a.color }}>{a.name[0]}</div><span className="authorized">● AUTORIZADO</span>
         <h2>{a.name}</h2><p>◉ {a.repo}</p>
         <dl><div><dt>Linguagem</dt><dd>{a.language}</dd></div><div><dt>Branch principal</dt><dd>{a.branch}</dd></div></dl>
@@ -422,8 +458,10 @@ export default function Home() {
           setConfigApp(a); setDeployWebhookUrl(""); setRemoveDeployWebhook(false);
           setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
           setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
+          setTestEnvironmentText("");
         }}>Configurar →</button></footer>
-      </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div>}
+      </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div> :
+      <form className="settings-panel" onSubmit={saveSettings}><h2>Retenção dos chamados</h2><p>O prazo é contado desde a conclusão ou falha. O worker aplica a limpeza automaticamente.</p><div className="command-grid"><label>Arquivar depois de<input type="number" min={1} max={3650} value={archiveAfterDays} onChange={e=>setArchiveAfterDays(Number(e.target.value))} /><small>dias</small></label><label>Excluir definitivamente depois de<input type="number" min={2} max={3650} value={deleteAfterDays} onChange={e=>setDeleteAfterDays(Number(e.target.value))} /><small>dias</small></label></div><button className="primary" disabled={deleteAfterDays<=archiveAfterDays}>Salvar configurações</button></form>}
     </section>
 
     {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onPaste={pasteImages} onMouseDown={e => e.stopPropagation()}>
@@ -457,6 +495,7 @@ export default function Home() {
         <label>Comando de lint<input value={lintCommand} onChange={e=>setLintCommand(e.target.value)} placeholder="npm run lint" /></label>
         <label>Comando de build<input value={buildCommand} onChange={e=>setBuildCommand(e.target.value)} placeholder="npm run build" /></label>
       </div>
+      <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>setTestEnvironmentText(e.target.value)} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
       <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
       <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Cancelar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setRemoveDeployWebhook(value=>!value)}>{removeDeployWebhook?"Manter webhook":"Remover webhook"}</button>}<button className="primary">Salvar</button></footer>
     </form></div>}
@@ -479,6 +518,7 @@ export default function Home() {
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
+      {ticketDetails?.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails?.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails?.deploy_status==="completed"?"Deploy concluído":ticketDetails?.deploy_status==="failed"?"Falha ao iniciar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails?.deploy_status==="in_progress"?"O webhook foi aceito. Confirme quando o histórico do EasyPanel mostrar o deploy concluído.":ticketDetails?.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails?.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
       {!ticketDetails && <div className="detail-loading">Carregando atividade…</div>}
       {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
       {pendingApproval && <section className="approval-panel"><h4>APROVAÇÃO NECESSÁRIA</h4><strong>{pendingApproval.reason}</strong><p>{pendingApproval.patch_available?"A correção foi preservada. Ao aprovar, o worker criará um clone limpo, restaurará o patch e continuará somente com as automações escolhidas no chamado.":"Esta execução não possui patch preservado. Se for um chamado antigo, duplique-o para executar novamente. Se houver Pull Request, a autorização deve ser feita no GitHub."}</p><div><button className="approve-ticket" disabled={!pendingApproval.patch_available} onClick={()=>decideApproval("approved")}>Aprovar correção</button><button className="danger" onClick={()=>decideApproval("rejected")}>Rejeitar correção</button></div></section>}

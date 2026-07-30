@@ -10,6 +10,7 @@ const releaseTagsVersion = "005_lb_release_tags";
 const approvalResumeVersion = "006_lb_approval_resume";
 const queuePriorityVersion = "007_lb_queue_priority";
 const workerPauseVersion = "008_lb_worker_pause";
+const settingsVersion = "009_lb_settings_retention_and_environment";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -96,6 +97,24 @@ async function migrate() {
       await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [workerPauseVersion]);
       await client.query("COMMIT");
       console.log(`Migração ${workerPauseVersion} aplicada`);
+    }
+    const settingsApplied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [settingsVersion]);
+    if (!settingsApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query(`CREATE TABLE IF NOT EXISTS lb_settings (
+        singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+        archive_after_days smallint NOT NULL DEFAULT 7 CHECK (archive_after_days BETWEEN 1 AND 3650),
+        delete_after_days smallint NOT NULL DEFAULT 15 CHECK (delete_after_days BETWEEN 2 AND 3650),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        CHECK (delete_after_days > archive_after_days)
+      )`);
+      await client.query("INSERT INTO lb_settings(singleton) VALUES(true) ON CONFLICT(singleton) DO NOTHING");
+      await client.query("ALTER TABLE lb_applications ADD COLUMN IF NOT EXISTS test_environment jsonb NOT NULL DEFAULT '{}'");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS archived_at timestamptz");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS deploy_status text NOT NULL DEFAULT 'not_requested'");
+      await client.query("ALTER TABLE lb_tickets ADD COLUMN IF NOT EXISTS deploy_updated_at timestamptz");
+      await client.query("INSERT INTO lb_migrations(version) VALUES($1)", [settingsVersion]);
+      await client.query("COMMIT");
     }
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);

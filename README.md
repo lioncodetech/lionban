@@ -16,3 +16,9 @@ Kanban pessoal para registrar bugs e delegar correções ao Codex, sempre no rep
 5. Exponha somente o serviço web por HTTPS. PostgreSQL e worker permanecem privados.
 
 O worker valida o ID do repositório, cria `lionban/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Ao criar uma tag em um projeto Node.js, o worker sincroniza antes a versão do `package.json` (e do lockfile atualizado pelo npm), inclui a mudança no commit e somente depois envia a tag.
+
+O login usa `ADMIN_USERNAME` (padrão `admin` quando ausente) e `ADMIN_PASSWORD_HASH`. Chamados concluídos, falhados ou cancelados são arquivados e removidos segundo os prazos de **Configurações** (7 e 15 dias por padrão). O worker executa essa manutenção ao iniciar e a cada hora.
+
+Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos processos daquele repositório. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis a base de produção nem os segredos internos do LionBan.
+
+O Deployment Trigger do EasyPanel apenas confirma que a solicitação foi aceita. Por isso, o chamado mostra o deploy como em curso até o usuário confirmar, no histórico do EasyPanel, que ele terminou; falhas HTTP ao disparar o webhook são registradas automaticamente.

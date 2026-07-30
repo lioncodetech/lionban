@@ -26,6 +26,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const ticketId = Number(id);
   if (!Number.isSafeInteger(ticketId) || ticketId < 1) return NextResponse.json({error:"Chamado inválido"},{status:400});
   const body=await request.json();
+  if (body.deployCompleted === true) {
+    const result=await transaction(async client=>{
+      const updated=await client.query(`UPDATE lb_tickets SET deploy_status='completed',deploy_updated_at=now(),updated_at=now()
+        WHERE id=$1 AND deploy_status='in_progress' RETURNING id`,[ticketId]);
+      if (updated.rowCount) await client.query("INSERT INTO lb_events(ticket_id,kind,message) VALUES($1,'deploy.completed','Deploy confirmado como concluído pelo usuário')",[ticketId]);
+      return updated.rowCount;
+    });
+    return result?NextResponse.json({ok:true}):NextResponse.json({error:"Este chamado não possui deploy em curso"},{status:409});
+  }
   if (body.decision === "approved" || body.decision === "rejected") {
     try {
       const decision=await transaction(async client => {

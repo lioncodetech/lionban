@@ -23,6 +23,7 @@ CREATE TABLE lb_applications (
   lint_command text,
   build_command text,
   deploy_webhook_url text,
+  test_environment jsonb NOT NULL DEFAULT '{}',
   enabled boolean NOT NULL DEFAULT true,
   created_at timestamptz NOT NULL DEFAULT now()
 );
@@ -44,6 +45,9 @@ CREATE TABLE lb_tickets (
   auto_deploy boolean NOT NULL DEFAULT false,
   create_tag boolean NOT NULL DEFAULT false,
   release_tag text,
+  archived_at timestamptz,
+  deploy_status text NOT NULL DEFAULT 'not_requested',
+  deploy_updated_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -104,3 +108,11 @@ CREATE TABLE lb_worker_control (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO lb_worker_control(singleton) VALUES(true);
+CREATE TABLE lb_settings (
+  singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+  archive_after_days smallint NOT NULL DEFAULT 7 CHECK (archive_after_days BETWEEN 1 AND 3650),
+  delete_after_days smallint NOT NULL DEFAULT 15 CHECK (delete_after_days BETWEEN 2 AND 3650),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  CHECK (delete_after_days > archive_after_days)
+);
+INSERT INTO lb_settings(singleton) VALUES(true);
