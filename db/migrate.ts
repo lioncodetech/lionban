@@ -13,11 +13,16 @@ const workerPauseVersion = "008_lb_worker_pause";
 const settingsVersion = "009_lb_settings_retention_and_environment";
 const workforceRenameVersion = "010_lwf_rename";
 const workforceSchemaVersion = "011_lwf_schema";
+const shadowCleanupVersion = "012_lwf_shadow_cleanup";
 async function migrate() {
   const client = await db.connect();
   try {
+    // Migrations always resolve the compatibility objects in public. Once the
+    // dedicated schema exists, an unqualified CREATE would otherwise create a
+    // second, empty lb_migrations table that hides the real history.
+    await client.query("SET search_path TO public");
     await client.query("SELECT pg_advisory_lock(732019)");
-    await client.query("CREATE TABLE IF NOT EXISTS lb_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
+    await client.query("CREATE TABLE IF NOT EXISTS public.lb_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())");
     const applied = await client.query("SELECT 1 FROM lb_migrations WHERE version=$1", [initialVersion]);
     if (!applied.rowCount) {
       const sql = await readFile(path.join(process.cwd(), "db", "schema.sql"), "utf8");
@@ -183,6 +188,38 @@ async function migrate() {
       await client.query("ALTER SEQUENCE IF EXISTS public.lwf_events_id_seq SET SCHEMA lionworkforce");
       await client.query("ALTER TYPE public.lwf_ticket_status SET SCHEMA lionworkforce");
       await client.query("ALTER TYPE public.lwf_priority SET SCHEMA lionworkforce");
+      await client.query("COMMIT");
+    }
+    const shadowCleanupApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [shadowCleanupVersion]);
+    if (!shadowCleanupApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query(`DO $$ DECLARE item text; amount bigint; BEGIN
+        FOREACH item IN ARRAY ARRAY[
+          'lb_repository_connections','lb_applications','lb_tickets','lb_executions',
+          'lb_events','lb_approvals','lb_artifacts'
+        ] LOOP
+          IF to_regclass('lionworkforce.' || item) IS NOT NULL THEN
+            EXECUTE format('SELECT count(*) FROM lionworkforce.%I',item) INTO amount;
+            IF amount > 0 THEN
+              RAISE EXCEPTION 'LEGACY_SHADOW_NOT_EMPTY: lionworkforce.% contains % row(s)',item,amount;
+            END IF;
+          END IF;
+        END LOOP;
+      END $$`);
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_events CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_approvals CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_artifacts CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_executions CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_tickets CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_applications CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_repository_connections CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_worker_heartbeats CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_worker_control CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_settings CASCADE");
+      await client.query("DROP TABLE IF EXISTS lionworkforce.lb_migrations CASCADE");
+      await client.query("DROP TYPE IF EXISTS lionworkforce.lb_ticket_status CASCADE");
+      await client.query("DROP TYPE IF EXISTS lionworkforce.lb_priority CASCADE");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [shadowCleanupVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {
