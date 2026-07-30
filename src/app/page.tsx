@@ -11,6 +11,7 @@ type App = {
 type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string; deployStatus:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type Attachment = { file: File; preview: string };
+type StoredAttachment = { name:string; mimeType:string; size:number; data:string };
 type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
@@ -267,15 +268,30 @@ export default function Home() {
   async function cloneTicket() {
     if (!detail) return;
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
-    setAttachments([]);
+    setAttachments([]); setDataError("");
     setAppId(detail.appId); setTitle(`${detail.title} (cópia)`); setDescription(detail.description); setPriority(detail.priority); setQueuePriority(detail.queuePriority);
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
     setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true);
     setSubmitError(""); setSubmittingTicket(false);
-    const response=await fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"});
-    if (response.ok) setRepoTags(await response.json());
+    const [tagsResponse,attachmentsResponse]=await Promise.all([
+      fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"}),
+      fetch(`/api/tickets/${detail.id}/attachments`,{cache:"no-store"}),
+    ]);
+    if (tagsResponse.ok) setRepoTags(await tagsResponse.json());
+    if (attachmentsResponse.ok) {
+      const stored=await attachmentsResponse.json() as StoredAttachment[];
+      setAttachments(stored.map(item=>{
+        const binary=atob(item.data);
+        const bytes=new Uint8Array(binary.length);
+        for (let index=0;index<binary.length;index++) bytes[index]=binary.charCodeAt(index);
+        const file=new File([bytes],item.name,{type:item.mimeType});
+        return {file,preview:URL.createObjectURL(file)};
+      }));
+    } else {
+      setSubmitError("A cópia foi aberta, mas não foi possível recuperar as imagens do chamado original.");
+    }
     setDetail(null); setModal(true);
   }
 
@@ -565,7 +581,7 @@ export default function Home() {
       {pendingApproval && <section className="approval-panel"><h4>APROVAÇÃO NECESSÁRIA</h4><strong>{pendingApproval.reason}</strong><p>{pendingApproval.patch_available?"A correção foi preservada. Ao aprovar, o worker criará um clone limpo, restaurará o patch e continuará somente com as automações escolhidas no chamado.":"Esta execução não possui patch preservado. Se for um chamado antigo, duplique-o para executar novamente. Se houver Pull Request, a autorização deve ser feita no GitHub."}</p><div><button className="approve-ticket" disabled={!pendingApproval.patch_available} onClick={()=>decideApproval("approved")}>Aprovar correção</button><button className="danger" onClick={()=>decideApproval("rejected")}>Rejeitar correção</button></div></section>}
       {codexProgressEvent && <section className="codex-conversation"><div className="conversation-title"><h4>ATIVIDADE PÚBLICA DO CODEX</h4><span>Atualização automática</span></div>{codexTranscript.length>0?codexTranscript.map((item,index)=><article className={item.type} key={`${item.at}-${index}`}><small>{new Date(item.at).toLocaleTimeString("pt-BR")}</small><p>{item.text}</p></article>):<p className="conversation-empty">O Codex ainda não emitiu uma atualização detalhada.</p>}{codexPrompt&&<details><summary>Ver prompt enviado ao Codex</summary><pre>{codexPrompt}</pre></details>}<small className="conversation-note">Mostra mensagens e ações públicas. O raciocínio interno privado do modelo não é disponibilizado.</small></section>}
       {showLogs && ticketDetails && <section className="full-logs"><h4>DETALHES TÉCNICOS</h4>{ticketDetails.executions.map(execution=><article key={execution.id}><strong>Tentativa {execution.attempt} · {execution.state}</strong><small>{execution.started_at?`Iniciada em ${new Date(execution.started_at).toLocaleString("pt-BR")}`:"Não iniciada"}</small>{execution.error_message&&<pre>{execution.error_message}</pre>}</article>)}{ticketDetails.events.map(event=><article key={`log-${event.id}`}><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message}</small>{Object.keys(event.metadata??{}).length>0&&<details><summary>Ver dados técnicos</summary><pre>{JSON.stringify(event.metadata,null,2)}</pre></details>}</article>)}</section>}
-      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar sem logs</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
+      <footer className="ticket-actions"><div><button className="danger" onClick={cancelExecution} disabled={["Concluído","Falhou","Aguardando aprovação"].includes(detail.status)}>Cancelar execução</button><button className="delete-ticket" onClick={deleteTicket}>Excluir cartão</button></div><div><button className="secondary" onClick={cloneTicket}>Duplicar com imagens</button><button className="secondary" onClick={()=>setShowLogs(value=>!value)}>{showLogs?"Ocultar logs":"Ver logs completos"}</button></div></footer>
     </aside></div>}
   </main>;
 }
