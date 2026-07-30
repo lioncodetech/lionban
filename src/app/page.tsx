@@ -96,6 +96,7 @@ export default function Home() {
   const [archiveAfterDays,setArchiveAfterDays]=useState(7);
   const [deleteAfterDays,setDeleteAfterDays]=useState(15);
   const [ticketDetails, setTicketDetails] = useState<TicketDetails | null>(null);
+  const [ticketDetailsError,setTicketDetailsError]=useState("");
   const [showLogs, setShowLogs] = useState(false);
   const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
   const [createTag, setCreateTag] = useState(false);
@@ -168,6 +169,9 @@ export default function Home() {
       if (response.ok) {
         const result=await response.json();
         setTicketDetails(ticketDetailsFromApi(result));
+        setTicketDetailsError("");
+      } else {
+        setTicketDetailsError("Não foi possível atualizar a atividade do chamado.");
       }
     },5000);
     return ()=>window.clearInterval(timer);
@@ -225,10 +229,14 @@ export default function Home() {
     if (response.ok) {
       const result=await response.json();
       setTicketDetails(ticketDetailsFromApi(result));
+      setTicketDetailsError("");
+    } else {
+      const result=await response.json().catch(()=>({}));
+      setTicketDetailsError(result.error??"Não foi possível carregar a atividade do chamado.");
     }
   }
   async function openTicket(ticket:Ticket) {
-    setDetail(ticket); setTicketDetails(null); setShowLogs(false);
+    setDetail(ticket); setTicketDetails(null); setTicketDetailsError(""); setShowLogs(false);
     await loadTicketDetails(ticket.id);
   }
 
@@ -550,8 +558,9 @@ export default function Home() {
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section><h4>ATIVIDADE DO AGENTE</h4>
-      {ticketDetails?.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails?.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails?.deploy_status==="completed"?"Deploy concluído":ticketDetails?.deploy_status==="failed"?"Falha ao iniciar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails?.deploy_status==="in_progress"?"O webhook foi aceito. Confirme quando o histórico do EasyPanel mostrar o deploy concluído.":ticketDetails?.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails?.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
-      {!ticketDetails && <div className="detail-loading">Carregando atividade…</div>}
+      {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao iniciar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"O webhook foi aceito. Confirme quando o histórico do EasyPanel mostrar o deploy concluído.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}
+      {!ticketDetails && !ticketDetailsError && <div className="detail-loading">Carregando atividade…</div>}
+      {ticketDetailsError&&<div className="import-error">{ticketDetailsError}</div>}
       {ticketDetails && <div className="timeline">{ticketDetails.events.map((event,index)=><div className={event.kind.includes("failed")?"failed":index===ticketDetails.events.length-1?"running":"done"} key={event.id}><i>{event.kind.includes("failed")?"!":index+1}</i><span><strong>{eventLabels[event.kind]??event.kind}</strong><small>{event.message} · {new Date(event.created_at).toLocaleString("pt-BR")}</small></span></div>)}</div>}
       {pendingApproval && <section className="approval-panel"><h4>APROVAÇÃO NECESSÁRIA</h4><strong>{pendingApproval.reason}</strong><p>{pendingApproval.patch_available?"A correção foi preservada. Ao aprovar, o worker criará um clone limpo, restaurará o patch e continuará somente com as automações escolhidas no chamado.":"Esta execução não possui patch preservado. Se for um chamado antigo, duplique-o para executar novamente. Se houver Pull Request, a autorização deve ser feita no GitHub."}</p><div><button className="approve-ticket" disabled={!pendingApproval.patch_available} onClick={()=>decideApproval("approved")}>Aprovar correção</button><button className="danger" onClick={()=>decideApproval("rejected")}>Rejeitar correção</button></div></section>}
       {codexProgressEvent && <section className="codex-conversation"><div className="conversation-title"><h4>ATIVIDADE PÚBLICA DO CODEX</h4><span>Atualização automática</span></div>{codexTranscript.length>0?codexTranscript.map((item,index)=><article className={item.type} key={`${item.at}-${index}`}><small>{new Date(item.at).toLocaleTimeString("pt-BR")}</small><p>{item.text}</p></article>):<p className="conversation-empty">O Codex ainda não emitiu uma atualização detalhada.</p>}{codexPrompt&&<details><summary>Ver prompt enviado ao Codex</summary><pre>{codexPrompt}</pre></details>}<small className="conversation-note">Mostra mensagens e ações públicas. O raciocínio interno privado do modelo não é disponibilizado.</small></section>}
