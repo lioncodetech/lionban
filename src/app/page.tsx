@@ -101,6 +101,8 @@ export default function Home() {
   const [createTag, setCreateTag] = useState(false);
   const [releaseTag, setReleaseTag] = useState("");
   const [duplicating, setDuplicating] = useState(false);
+  const [submittingTicket,setSubmittingTicket]=useState(false);
+  const [submitError,setSubmitError]=useState("");
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? {
     id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
@@ -263,6 +265,7 @@ export default function Home() {
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
     setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true);
+    setSubmitError(""); setSubmittingTicket(false);
     const response=await fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"});
     if (response.ok) setRepoTags(await response.json());
     setDetail(null); setModal(true);
@@ -295,29 +298,42 @@ export default function Home() {
     setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
     setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setDataError("");
-    setModal(true);
+    setSubmitError(""); setSubmittingTicket(false); setModal(true);
   }
 
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (!appId || !title.trim() || !description.trim()) return;
-    const encodedAttachments = await Promise.all(attachments.map(async ({ file }) => {
+    setSubmitError("");
+    if (!appId) return setSubmitError("Escolha uma aplicação.");
+    if (title.trim().length<3) return setSubmitError("O título precisa ter pelo menos 3 caracteres.");
+    if (description.trim().length<10) return setSubmitError("A descrição precisa ter pelo menos 10 caracteres.");
+    setSubmittingTicket(true);
+    try {
+      const encodedAttachments = await Promise.all(attachments.map(async ({ file }) => {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
       });
       return { name:file.name, mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
-    }));
-    const response = await fetch("/api/tickets", {
+      }));
+      const response = await fetch("/api/tickets", {
       method:"POST", headers:{"content-type":"application/json"},
       body:JSON.stringify({ applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:undefined }),
-    });
-    if (!response.ok) { setDataError("Não foi possível criar o chamado."); return; }
-    const created = await response.json();
-    setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora",deployStatus:"not_requested" }, ...v]);
-    attachments.forEach(item => URL.revokeObjectURL(item.preview));
-    setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false);
-    setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
-    setCreateTag(false); setReleaseTag(""); setRepoTags([]);
+      });
+      const created = await response.json().catch(()=>({}));
+      if (!response.ok) {
+        setSubmitError(created.error??"Não foi possível criar o chamado.");
+        return;
+      }
+      setTickets(v => [{ id:Number(created.id),appId:String(created.application_id),title:String(created.title),description:String(created.description),priority,queuePriority,status:"Aberto",age:"agora",deployStatus:"not_requested" }, ...v]);
+      attachments.forEach(item => URL.revokeObjectURL(item.preview));
+      setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false);
+      setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
+      setCreateTag(false); setReleaseTag(""); setRepoTags([]);
+    } catch {
+      setSubmitError("Falha de conexão ao enviar o chamado. Tente novamente.");
+    } finally {
+      setSubmittingTicket(false);
+    }
   }
 
   function addImages(files: File[]) {
@@ -497,7 +513,8 @@ export default function Home() {
       </fieldset>
       {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div></div>}
       {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
-      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={!appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>Criar e enviar ao Codex →</button></footer>
+      {submitError&&<div className="import-error">{submitError}</div>}
+      <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={submittingTicket || !appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>{submittingTicket?"Enviando chamado...":"Criar e enviar ao Codex →"}</button></footer>
     </form></div>}
 
     {configApp && <div className="overlay" onMouseDown={() => setConfigApp(null)}><form className="modal config-modal" onSubmit={saveApplicationConfig} onMouseDown={e => e.stopPropagation()}>
