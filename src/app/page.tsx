@@ -24,6 +24,7 @@ type TicketDetails = {
   deploy_status:string; deploy_updated_at:string|null;
 };
 type RepoTag = { name:string; commit:{sha:string} };
+type RepoAction = { id:number; name:string; display_title:string; status:string; conclusion:string|null; html_url:string; created_at:string };
 type CodexTranscriptItem = { at:string; type:string; text:string };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
@@ -105,6 +106,7 @@ export default function Home() {
   const [ticketDetailsError,setTicketDetailsError]=useState("");
   const [showLogs, setShowLogs] = useState(false);
   const [repoTags, setRepoTags] = useState<RepoTag[]>([]);
+  const [repoActions, setRepoActions] = useState<RepoAction[]>([]);
   const [createTag, setCreateTag] = useState(false);
   const [releaseTag, setReleaseTag] = useState("");
   const [duplicating, setDuplicating] = useState(false);
@@ -288,13 +290,15 @@ export default function Home() {
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
-    setRepoQuery(""); setRepoTags([]); setDataError(""); setDuplicating(true); setEditingTicketId(null);
+    setRepoQuery(""); setRepoTags([]); setRepoActions([]); setDataError(""); setDuplicating(true); setEditingTicketId(null);
     setSubmitError(""); setSubmittingTicket(false);
-    const [tagsResponse,attachmentsResponse]=await Promise.all([
+    const [tagsResponse,actionsResponse,attachmentsResponse]=await Promise.all([
       fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"}),
+      fetch(`/api/applications/${detail.appId}/actions`,{cache:"no-store"}),
       fetch(`/api/tickets/${detail.id}/attachments`,{cache:"no-store"}),
     ]);
     if (tagsResponse.ok) setRepoTags(await tagsResponse.json());
+    if (actionsResponse.ok) setRepoActions(await actionsResponse.json());
     if (attachmentsResponse.ok) {
       const stored=await attachmentsResponse.json() as StoredAttachment[];
       setAttachments(stored.map(item=>{
@@ -318,13 +322,15 @@ export default function Home() {
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
-    setRepoQuery(""); setRepoTags([]); setDuplicating(false); setEditingTicketId(detail.id);
+    setRepoQuery(""); setRepoTags([]); setRepoActions([]); setDuplicating(false); setEditingTicketId(detail.id);
     setSubmitError(""); setSubmittingTicket(false);
-    const [tagsResponse,imagesResponse]=await Promise.all([
+    const [tagsResponse,actionsResponse,imagesResponse]=await Promise.all([
       fetch(`/api/applications/${detail.appId}/tags`,{cache:"no-store"}),
+      fetch(`/api/applications/${detail.appId}/actions`,{cache:"no-store"}),
       fetch(`/api/tickets/${detail.id}/attachments`,{cache:"no-store"}),
     ]);
     if (tagsResponse.ok) setRepoTags(await tagsResponse.json());
+    if (actionsResponse.ok) setRepoActions(await actionsResponse.json());
     if (imagesResponse.ok) {
       const stored=await imagesResponse.json() as StoredAttachment[];
       setAttachments(stored.map(item=>{
@@ -354,16 +360,20 @@ export default function Home() {
   }
 
   async function chooseApplication(id:string) {
-    setAppId(id); setRepoTags([]); setCreateTag(false); setReleaseTag("");
-    const response=await fetch(`/api/applications/${id}/tags`,{cache:"no-store"});
-    if (response.ok) { const tags=await response.json(); setRepoTags(tags); setReleaseTag(suggestNextTag(tags)); }
+    setAppId(id); setRepoTags([]); setRepoActions([]); setCreateTag(false); setReleaseTag("");
+    const [tagsResponse,actionsResponse]=await Promise.all([
+      fetch(`/api/applications/${id}/tags`,{cache:"no-store"}),
+      fetch(`/api/applications/${id}/actions`,{cache:"no-store"}),
+    ]);
+    if (tagsResponse.ok) { const tags=await tagsResponse.json(); setRepoTags(tags); setReleaseTag(suggestNextTag(tags)); }
+    if (actionsResponse.ok) setRepoActions(await actionsResponse.json());
   }
 
   function openNewTicket() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5);
     setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
-    setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoQuery(""); setDuplicating(false); setEditingTicketId(null); setDataError("");
+    setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoActions([]); setRepoQuery(""); setDuplicating(false); setEditingTicketId(null); setDataError("");
     setSubmitError(""); setSubmittingTicket(false); setModal(true);
   }
 
@@ -395,7 +405,7 @@ export default function Home() {
       attachments.forEach(item => URL.revokeObjectURL(item.preview));
       setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false); setEditingTicketId(null);
       setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
-      setCreateTag(false); setReleaseTag(""); setRepoTags([]);
+      setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoActions([]);
     } catch {
       setSubmitError("Falha de conexão ao enviar o chamado. Tente novamente.");
     } finally {
@@ -583,7 +593,7 @@ export default function Home() {
         <label className={!appId || !app(appId).deployConfigured || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={autoDeploy} disabled={!appId || !app(appId).deployConfigured || autoPullRequest} onChange={e => { setAutoDeploy(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Deploy automático</strong><small>{appId && app(appId).deployConfigured ? (autoPullRequest ? "Disponível somente sem Pull Request" : "Disparar webhook do EasyPanel após integrar") : "Configure o webhook na aplicação"}</small></span></label>
         <label className={!appId || autoPullRequest ? "disabled" : ""}><input type="checkbox" checked={createTag} disabled={!appId || autoPullRequest} onChange={e => { setCreateTag(e.target.checked); if (e.target.checked) { setAutoCommit(true); setAutoPush(true); } }} /><span><strong>Criar tag e ativar Action</strong><small>{autoPullRequest?"Disponível após integração, sem Pull Request":repoTags.length?`${repoTags.length} tag(s) encontrada(s)`:"Nenhuma tag encontrada; iniciar em v1.0.0"}</small></span></label>
       </fieldset>
-      {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div></div>}
+      {createTag && <div className="tag-options"><label>Nova versão<input value={releaseTag} onChange={e=>setReleaseTag(e.target.value)} placeholder="v1.0.0" />{repoTags.some(tag=>tag.name===releaseTag)&&<small className="tag-error">Essa tag já existe. Altere o número da versão.</small>}</label><div><strong>Tags anteriores</strong><p>{repoTags.length?repoTags.slice(0,8).map(tag=><button type="button" key={tag.name} onClick={()=>setReleaseTag(tag.name)} title="Usar como base e editar">{tag.name}</button>):<small>Nenhuma tag neste repositório.</small>}</p></div><div className="recent-actions"><strong>Últimas Actions</strong>{repoActions.length?<ol>{repoActions.slice(0,5).map(action=><li key={action.id}><a href={action.html_url} target="_blank" rel="noreferrer">{action.display_title || action.name}</a><small>{action.conclusion ?? action.status} · {new Date(action.created_at).toLocaleString("pt-BR")}</small></li>)}</ol>:<small>Nenhuma execução recente encontrada.</small>}</div></div>}
       {attachments.length > 0 && <div className="attachment-list">{attachments.map((item,index) => <div className="attachment" key={`${item.file.name}-${index}`}><Image src={item.preview} alt={`Prévia de ${item.file.name}`} width={42} height={42} unoptimized /><span><strong>{item.file.name}</strong><small>{Math.ceil(item.file.size/1024)} KB</small></span><button type="button" onClick={() => removeImage(index)} aria-label={`Remover ${item.file.name}`}>×</button></div>)}</div>}
       {submitError&&<div className="import-error">{submitError}</div>}
       <footer><button type="button" className="secondary" onClick={() => setModal(false)}>Cancelar</button><button className="primary" disabled={submittingTicket || !appId || !title || !description || (createTag && (!releaseTag || repoTags.some(tag=>tag.name===releaseTag)))}>{submittingTicket?"Salvando...":editingTicketId?"Salvar alterações":duplicating?"Criar cópia e enviar ao Codex →":"Criar e enviar ao Codex →"}</button></footer>
