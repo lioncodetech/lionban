@@ -19,6 +19,8 @@ Use `?schema=lionworkforce` na `DATABASE_URL` dos serviços web e worker. O driv
 
 O worker valida o ID do repositório, cria `lionworkforce/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Ao criar uma tag em um projeto Node.js, o worker sincroniza antes a versão do `package.json` (e do lockfile atualizado pelo npm), inclui a mudança no commit e somente depois envia a tag.
 
+Ao selecionar **Criar tag e ativar Action** em um chamado, o formulário consulta as tags do repositório para sugerir a próxima versão e mostra também as 5 execuções mais recentes do GitHub Actions, com estado, data e link para os detalhes.
+
 O login usa `ADMIN_USERNAME` (padrão `admin` quando ausente) e `ADMIN_PASSWORD_HASH`. Chamados concluídos, falhados ou cancelados são arquivados e removidos segundo os prazos de **Configurações** (7 e 15 dias por padrão). O worker executa essa manutenção ao iniciar e a cada hora.
 
 Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos processos daquele repositório. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis os segredos internos do LionWorkForce.

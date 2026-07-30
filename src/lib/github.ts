@@ -15,3 +15,13 @@ export async function listRepositoryTags(fullName:string) {
   if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
   return response.json() as Promise<Array<{name:string;commit:{sha:string}}>>;
 }
+export type RepositoryActionRun = {
+  id:number; name:string; display_title:string; status:string; conclusion:string|null;
+  html_url:string; created_at:string;
+};
+export async function listRecentRepositoryActions(fullName:string) {
+  const response=await fetch(`${api}/repos/${fullName}/actions/runs?per_page=5`,{headers:headers(),cache:"no-store"});
+  if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
+  const result=await response.json() as {workflow_runs:RepositoryActionRun[]};
+  return result.workflow_runs;
+}
