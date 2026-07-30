@@ -1,5 +1,10 @@
 # LionBan
 
+> No EasyPanel, o contêiner do worker é a fronteira de isolamento do executor.
+> `CODEX_SANDBOX_MODE=danger-full-access` evita a criação de namespaces
+> bloqueada pelo contêiner. O subprocesso do Codex recebe um ambiente sanitizado:
+> `GITHUB_TOKEN`, `DATABASE_URL` e outros segredos do worker não são repassados.
+
 Kanban pessoal para registrar bugs e delegar correções ao Codex, sempre no repositório GitHub escolhido no chamado.
 
 ## EasyPanel

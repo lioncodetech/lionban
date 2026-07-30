@@ -8,6 +8,28 @@ import { validateRepo } from "../src/lib/github";
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; create_tag:boolean; release_tag?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
+const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
+const codexSandboxMode = ["read-only","workspace-write","danger-full-access"].includes(configuredCodexSandbox)
+  ? configuredCodexSandbox
+  : "danger-full-access";
+function codexEnvironment():NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH","HOME","USERPROFILE","CODEX_HOME","APPDATA","LOCALAPPDATA",
+    "SYSTEMROOT","COMSPEC","PATHEXT","TEMP","TMP","TMPDIR",
+    "LANG","LC_ALL","SSL_CERT_FILE","SSL_CERT_DIR","NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY","HTTPS_PROXY","NO_PROXY",
+  ];
+  const environment:NodeJS.ProcessEnv = {
+    NODE_ENV:process.env.NODE_ENV ?? "production",
+    CI:"true",
+    TERM:"dumb",
+    NO_COLOR:"1",
+  };
+  for (const key of allowed) {
+    if (process.env[key] !== undefined) environment[key]=process.env[key];
+  }
+  return environment;
+}
 function git(args:string[], cwd:string) {
   const token=process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN_NOT_CONFIGURED");
@@ -37,7 +59,9 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   const startupTimeoutMs=Math.max(30_000,Number(process.env.CODEX_START_TIMEOUT_MS ?? 90_000));
   return new Promise<string>((resolve,reject) => {
     const child=spawn(command,args,{
-      cwd,env:{...process.env,CI:"true",TERM:"dumb",NO_COLOR:"1"},
+      // EasyPanel's container is the isolation boundary. Its nested Linux
+      // sandbox cannot create namespaces. Never expose worker secrets here.
+      cwd,env:codexEnvironment(),
       shell:false,windowsHide:true,stdio:["ignore","pipe","pipe"],
     });
     let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Iniciando o Codex"; let lastActivityAt=Date.now(); let receivedStructuredEvent=false;
@@ -238,7 +262,7 @@ Fluxo obrigatório:
 Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
     await db.query("UPDATE lb_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
     const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
-    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox","workspace-write","--skip-git-repo-check","--json",prompt],repo,job,progressEventId);
+    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",prompt],repo,job,progressEventId);
     await assertNotCancelled(job);
     const changedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim());
     const documentationChanged=changedFiles.some(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
@@ -248,7 +272,7 @@ Leia a documentação existente do projeto e documente objetivamente a mudança 
 Prefira atualizar o documento mais relevante. Se não existir, atualize README/CHANGELOG ou crie uma nota curta em docs/.
 Não altere a implementação, não faça commit, push, merge ou deploy.`;
       const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
-      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox","workspace-write","--skip-git-repo-check","--json",documentationPrompt],repo,job,documentationEventId);
+      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",documentationPrompt],repo,job,documentationEventId);
       const documentedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim()).filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
       if (!documentedFiles.length) throw new Error("DOCUMENTATION_NOT_UPDATED");
       await event(job,"documentation.updated","Documentação do projeto atualizada",{files:documentedFiles});
