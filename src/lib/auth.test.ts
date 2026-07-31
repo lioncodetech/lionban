@@ -1,6 +1,6 @@
 import { afterEach,describe,expect,it } from "vitest";
 import { hash } from "bcryptjs";
-import { authConfigurationError,verifyLogin } from "./auth";
+import { authConfigurationError,diagnoseLogin,verifyLogin } from "./auth";
 
 const previous={...process.env};
 afterEach(()=>{
@@ -14,5 +14,10 @@ describe("autenticação",()=>{
     process.env.ADMIN_PASSWORD_HASH=` ${(await hash("senha-forte",4))} `;
     expect(authConfigurationError()).toBeNull();
     await expect(verifyLogin("elder","senha-forte")).resolves.toBe(true);
+    await expect(diagnoseLogin("elder","senha-forte")).resolves.toMatchObject({
+      usernameMatches:true,passwordMatches:true,hashShapeValid:true,hashLength:60,
+    });
+    process.env.ADMIN_PASSWORD_HASH=`'${process.env.ADMIN_PASSWORD_HASH!.trim()}'`;
+    await expect(verifyLogin("ELDER","senha-forte")).resolves.toBe(true);
   });
 });
