@@ -18,6 +18,8 @@ Use `?schema=lionworkforce` na `DATABASE_URL` dos serviços web e worker. O driv
 
 O worker valida o ID do repositório, cria `lionworkforce/chamado-{id}` e executa apenas as automações marcadas no chamado. Pull Request exige commit e push. O deploy exige um webhook HTTPS configurado em **Aplicações → Configurar** e só é disparado depois da integração na branch principal. Ao criar uma tag em um projeto Node.js, o worker sincroniza antes a versão do `package.json` (e do lockfile atualizado pelo npm), inclui a mudança no commit e somente depois envia a tag.
 
+Cada chamado pode fixar um modelo de IA pelo identificador aceito pelo Codex CLI. Se o campo ficar vazio, o modelo padrão da conta autenticada é usado. O modelo e todas as demais opções de automação permanecem visíveis no detalhe do chamado mesmo quando ele já não pode ser editado.
+
 Ao selecionar **Criar tag e ativar Action** em um chamado, o formulário consulta as tags recentes do repositório da aplicação selecionada para sugerir a próxima versão e mostra também as 5 execuções mais recentes do GitHub Actions, com estado, data e link para os detalhes.
 
 O login exige `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH` e `AUTH_SECRET` com pelo menos 32 caracteres. Não existem credenciais padrão. Chamados concluídos, falhados ou cancelados são arquivados e removidos segundo os prazos de **Configurações** (7 e 15 dias por padrão). O worker executa essa manutenção ao iniciar e a cada hora.

@@ -9,6 +9,7 @@ const ticketInput = z.object({
   description: z.string().trim().min(10).max(20000),
   priority: z.enum(["low","medium","high","critical"]).default("medium"),
   queuePriority: z.number().int().min(1).max(10).default(5),
+  aiModel: z.string().trim().max(100).regex(/^[A-Za-z0-9._:-]+$/).nullable().default(null),
   autoCommit: z.boolean().default(true),
   autoPush: z.boolean().default(true),
   autoPullRequest: z.boolean().default(false),
@@ -46,8 +47,8 @@ export async function POST(request: Request) {
     if (parsed.data.autoPullRequest && (!parsed.data.autoCommit || !parsed.data.autoPush)) throw new Error("PR_REQUIRES_PUSH");
     if (parsed.data.autoDeploy && (!parsed.data.autoCommit || !parsed.data.autoPush || parsed.data.autoPullRequest)) throw new Error("DEPLOY_REQUIRES_DIRECT_MERGE");
     if (parsed.data.createTag && (!parsed.data.releaseTag || parsed.data.autoPullRequest || !parsed.data.autoCommit || !parsed.data.autoPush)) throw new Error("INVALID_RELEASE_TAG_FLOW");
-    const created = await client.query(`INSERT INTO lwf_tickets(application_id,title,description,priority,queue_priority,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag)
-      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`, [parsed.data.applicationId, parsed.data.title, parsed.data.description, parsed.data.priority,parsed.data.queuePriority, parsed.data.autoCommit, parsed.data.autoPush, parsed.data.autoPullRequest, parsed.data.autoDeploy,parsed.data.createTag,parsed.data.releaseTag ?? null]);
+    const created = await client.query(`INSERT INTO lwf_tickets(application_id,title,description,priority,queue_priority,ai_model,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag)
+      VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`, [parsed.data.applicationId, parsed.data.title, parsed.data.description, parsed.data.priority,parsed.data.queuePriority,parsed.data.aiModel, parsed.data.autoCommit, parsed.data.autoPush, parsed.data.autoPullRequest, parsed.data.autoDeploy,parsed.data.createTag,parsed.data.releaseTag ?? null]);
     await client.query("INSERT INTO lwf_executions(ticket_id,application_id) VALUES($1,$2)", [created.rows[0].id, parsed.data.applicationId]);
     await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'ticket.created','Chamado criado e enfileirado')", [created.rows[0].id]);
     for (const attachment of parsed.data.attachments) {

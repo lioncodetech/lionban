@@ -16,6 +16,7 @@ const workforceSchemaVersion = "011_lwf_schema";
 const shadowCleanupVersion = "012_lwf_shadow_cleanup";
 const deployMonitoringVersion = "013_lwf_deploy_monitoring";
 const applicationContextVersion = "014_lwf_application_context";
+const ticketModelVersion = "015_lwf_ticket_ai_model";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -241,6 +242,13 @@ async function migrate() {
       await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS project_context text NOT NULL DEFAULT ''");
       await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS technical_history text NOT NULL DEFAULT ''");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [applicationContextVersion]);
+      await client.query("COMMIT");
+    }
+    const ticketModelApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [ticketModelVersion]);
+    if (!ticketModelApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD COLUMN IF NOT EXISTS ai_model text");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [ticketModelVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {

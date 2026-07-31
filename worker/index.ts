@@ -7,7 +7,7 @@ import { defaultBranchContainsCommit, getPullRequestStatus, validateRepo } from 
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 import { assertSafeOutboundUrl } from "../src/lib/outbound-url";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; ai_model?:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const maximumCapturedOutput=1_000_000;
 const appendOutput=(current:string,next:string)=>(current+next).slice(-maximumCapturedOutput);
@@ -66,6 +66,9 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
 function commandParts(command:string) {
   const [bin,...args]=command.trim().split(/\s+/);
   return {bin,args};
+}
+function codexExecArgs(prompt:string, model?:string) {
+  return ["exec",...(model?["--model",model]:[]),"--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",prompt];
 }
 function validationSignature(error:unknown, repo:string) {
   const message=error instanceof Error?error.message:String(error);
@@ -335,7 +338,7 @@ async function claim():Promise<Job|null> {
       await client.query("ROLLBACK");
       return null;
     }
-    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
+    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,t.ai_model,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
       a.project_context,a.technical_history,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
@@ -587,8 +590,8 @@ Fluxo obrigatório:
 
 Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
     await db.query("UPDATE lwf_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
-    const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
-    await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",prompt],repo,job,progressEventId);
+    const progressEventId=await event(job,"codex.started","Codex iniciou a análise e correção",{model:job.ai_model??"default",timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt,transcript:[]});
+    await runControlled(process.env.CODEX_BIN ?? "codex",codexExecArgs(prompt,job.ai_model),repo,job,progressEventId);
     await assertNotCancelled(job);
     const changedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim());
     const documentationChanged=changedFiles.some(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
@@ -599,8 +602,8 @@ Prefira atualizar o documento mais relevante. Se não existir, atualize README/C
 Revise também docs/PROJECT_CONTEXT.md. Crie-o se estiver ausente e atualize-o somente com fatos confirmados quando a correção afetar o contexto operacional permanente. Mantenha no máximo 30.000 caracteres e não inclua segredos.
 ${applicationContextSection(job.project_context,job.technical_history)}
 Não altere a implementação, não faça commit, push, merge ou deploy.`;
-      const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
-      await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",documentationPrompt],repo,job,documentationEventId);
+      const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{model:job.ai_model??"default",timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
+      await runControlled(process.env.CODEX_BIN ?? "codex",codexExecArgs(documentationPrompt,job.ai_model),repo,job,documentationEventId);
       const documentedFiles=(await git(["status","--porcelain"],repo)).split(/\r?\n/).filter(Boolean).map(line=>line.slice(3).trim()).filter(file=>/(^|\/)(readme|changelog|contributing|agents)(\.|$)|(^|\/)docs\/|\.md$/i.test(file));
       if (!documentedFiles.length) throw new Error("DOCUMENTATION_NOT_UPDATED");
       await event(job,"documentation.updated","Documentação do projeto atualizada",{files:documentedFiles});

@@ -22,6 +22,7 @@ type TicketExecution = { id:string; state:string; attempt:number; started_at:str
 type TicketApproval = { id:string; reason:string; decision:string|null; decided_at:string|null; created_at:string; patch_available:boolean };
 type TicketDetails = {
   events:TicketEvent[]; executions:TicketExecution[]; approvals:TicketApproval[];
+  ai_model:string|null;
   auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean;
   create_tag:boolean; release_tag:string|null;
   deploy_status:string; deploy_updated_at:string|null;
@@ -61,6 +62,7 @@ const ticketDetailsFromApi=(result:Record<string,unknown>):TicketDetails => ({
   events:(result.events as TicketEvent[] | undefined) ?? [],
   executions:(result.executions as TicketExecution[] | undefined) ?? [],
   approvals:(result.approvals as TicketApproval[] | undefined) ?? [],
+  ai_model:result.ai_model ? String(result.ai_model) : null,
   auto_commit:Boolean(result.auto_commit),auto_push:Boolean(result.auto_push),
   auto_pull_request:Boolean(result.auto_pull_request),auto_deploy:Boolean(result.auto_deploy),
   create_tag:Boolean(result.create_tag),release_tag:result.release_tag ? String(result.release_tag) : null,
@@ -82,6 +84,7 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [priority, setPriority] = useState<Ticket["priority"]>("Média");
   const [queuePriority, setQueuePriority] = useState(5);
+  const [aiModel,setAiModel]=useState("");
   const [importModal, setImportModal] = useState(false);
   const [githubRepos, setGithubRepos] = useState<GitHubRepo[]>([]);
   const [githubQuery, setGithubQuery] = useState("");
@@ -301,6 +304,7 @@ export default function Home() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]); setDataError("");
     setAppId(detail.appId); setTitle(`${detail.title} (cópia)`); setDescription(detail.description); setPriority(detail.priority); setQueuePriority(detail.queuePriority);
+    setAiModel(ticketDetails?.ai_model ?? "");
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
@@ -333,6 +337,7 @@ export default function Home() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]); setAppId(detail.appId); setTitle(detail.title); setDescription(detail.description);
     setPriority(detail.priority); setQueuePriority(detail.queuePriority);
+    setAiModel(ticketDetails?.ai_model ?? "");
     setAutoCommit(ticketDetails?.auto_commit ?? true); setAutoPush(ticketDetails?.auto_push ?? true);
     setAutoPullRequest(ticketDetails?.auto_pull_request ?? false); setAutoDeploy(ticketDetails?.auto_deploy ?? false);
     setCreateTag(ticketDetails?.create_tag ?? false); setReleaseTag(ticketDetails?.release_tag ?? "");
@@ -386,7 +391,7 @@ export default function Home() {
   function openNewTicket() {
     attachments.forEach(item=>URL.revokeObjectURL(item.preview));
     setAttachments([]); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5);
-    setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
+    setAiModel(""); setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
     setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoActions([]); setRepoQuery(""); setDuplicating(false); setEditingTicketId(null); setDataError("");
     setSubmitError(""); setSubmittingTicket(false); setModal(true);
   }
@@ -407,7 +412,7 @@ export default function Home() {
       }));
       const response = await fetch(editingTicketId?`/api/tickets/${editingTicketId}`:"/api/tickets", {
       method:editingTicketId?"PATCH":"POST", headers:{"content-type":"application/json"},
-      body:JSON.stringify({ edit:Boolean(editingTicketId),applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:(editingTicketId?null:undefined) }),
+      body:JSON.stringify({ edit:Boolean(editingTicketId),applicationId:appId,title,description,priority:priorityToApi[priority],queuePriority,aiModel:aiModel.trim()||null,attachments:encodedAttachments,autoCommit,autoPush,autoPullRequest,autoDeploy,createTag,releaseTag:createTag?releaseTag:(editingTicketId?null:undefined) }),
       });
       const created = await response.json().catch(()=>({}));
       if (!response.ok) {
@@ -418,7 +423,7 @@ export default function Home() {
       setTickets(current=>editingTicketId?current.map(item=>item.id===editingTicketId?savedTicket:item):[savedTicket,...current]);
       attachments.forEach(item => URL.revokeObjectURL(item.preview));
       setModal(false); setAppId(""); setTitle(""); setDescription(""); setPriority("Média"); setQueuePriority(5); setAttachments([]); setDuplicating(false); setEditingTicketId(null);
-      setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
+      setAiModel(""); setAutoCommit(true); setAutoPush(true); setAutoPullRequest(false); setAutoDeploy(false);
       setCreateTag(false); setReleaseTag(""); setRepoTags([]); setRepoActions([]);
     } catch {
       setSubmitError("Falha de conexão ao enviar o chamado. Tente novamente.");
@@ -616,6 +621,7 @@ export default function Home() {
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
       <div className="row ticket-fields"><label>Criticidade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><label>Ordem da fila<select value={queuePriority} onChange={e=>setQueuePriority(Number(e.target.value))}>{Array.from({length:10},(_,index)=>index+1).map(value=><option key={value} value={value}>{value} — {value===1?"primeiro":value===10?"último":"prioridade da fila"}</option>)}</select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
+      <label>Modelo de IA<input value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="Padrão da conta Codex" pattern="[A-Za-z0-9._:-]+" maxLength={100} /><small>Deixe vazio para usar o modelo padrão da sua conta ou informe o identificador de um modelo disponível no seu plano.</small></label>
       <p className={`severity-help severity-${priority}`}>{priority==="Alta"||priority==="Crítica"?"Esta criticidade exige sua aprovação antes de commit, push ou merge.":"Esta criticidade continua automaticamente após a correção; Pull Request ainda exige autorização no GitHub."}</p>
       <fieldset className="automation-options"><legend>Automação após corrigir e testar</legend>
         <label><input type="checkbox" checked={autoCommit} onChange={e => { setAutoCommit(e.target.checked); if (!e.target.checked) { setAutoPush(false); setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Commit automático</strong><small>Criar um commit com a correção</small></span></label>
@@ -670,6 +676,7 @@ export default function Home() {
       <header><div><p>CHAMADO #{detail.id}</p><h2>{detail.title}</h2></div><button onClick={() => setDetail(null)}>×</button></header>
       <div className="locked"><i style={{background:app(detail.appId).color}}>{app(detail.appId).name[0]}</i><div><strong>{app(detail.appId).name}</strong><small>{app(detail.appId).repo} · {app(detail.appId).branch}</small></div><b>Repositório bloqueado</b></div>
       <section className="ticket-description"><h4>DESCRIÇÃO COMPLETA</h4><p>{detail.description}</p></section>
+      {ticketDetails&&<section className="ticket-configuration"><h4>CONFIGURAÇÕES DO CHAMADO</h4><dl><div><dt>Modelo de IA</dt><dd>{ticketDetails.ai_model??"Padrão da conta Codex"}</dd></div><div><dt>Criticidade</dt><dd>{detail.priority}</dd></div><div><dt>Ordem da fila</dt><dd>{detail.queuePriority}</dd></div><div><dt>Commit automático</dt><dd>{ticketDetails.auto_commit?"Sim":"Não"}</dd></div><div><dt>Push automático</dt><dd>{ticketDetails.auto_push?"Sim":"Não"}</dd></div><div><dt>Pull Request automático</dt><dd>{ticketDetails.auto_pull_request?"Sim":"Não"}</dd></div><div><dt>Deploy automático</dt><dd>{ticketDetails.auto_deploy?"Sim":"Não"}</dd></div><div><dt>Criar tag</dt><dd>{ticketDetails.create_tag?(ticketDetails.release_tag??"Sim"):"Não"}</dd></div></dl></section>}
       {ticketImages.length>0&&<section className="ticket-gallery"><h4>IMAGENS DO CHAMADO</h4><div>{ticketImages.map((image,index)=><button type="button" key={`${image.name}-${index}`} onClick={()=>setPreviewImage({name:image.name,src:`data:${image.mimeType};base64,${image.data}`})} aria-label={`Ampliar ${image.name}`}><Image src={`data:${image.mimeType};base64,${image.data}`} alt="" width={180} height={120} unoptimized /><span>{image.name}</span></button>)}</div></section>}
       <h4>ATIVIDADE DO AGENTE</h4>
       {ticketDetails && ticketDetails.deploy_status!=="not_requested" && <section className={`deploy-panel deploy-${ticketDetails.deploy_status}`}><h4>DEPLOY</h4><strong>{ticketDetails.deploy_status==="completed"?"Deploy concluído":ticketDetails.deploy_status==="failed"?"Falha ao confirmar deploy":"Deploy em curso no EasyPanel"}</strong><p>{ticketDetails.deploy_status==="in_progress"?"A fila está pausada enquanto o LionWorkForce procura o novo commit na URL de verificação. A confirmação manual continua disponível como alternativa.":ticketDetails.deploy_updated_at?`Atualizado em ${new Date(ticketDetails.deploy_updated_at).toLocaleString("pt-BR")}`:""}</p>{ticketDetails.deploy_status==="in_progress"&&<button className="approve-ticket" onClick={confirmDeployCompleted}>Confirmar deploy concluído</button>}</section>}

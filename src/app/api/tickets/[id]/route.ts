@@ -18,6 +18,7 @@ const editInput=z.object({
   description:z.string().trim().min(10).max(20000),
   priority:z.enum(["low","medium","high","critical"]),
   queuePriority:z.number().int().min(1).max(10),
+  aiModel:z.string().trim().max(100).regex(/^[A-Za-z0-9._:-]+$/).nullable(),
   autoCommit:z.boolean(),
   autoPush:z.boolean(),
   autoPullRequest:z.boolean(),
@@ -64,10 +65,11 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       if (!execution.rowCount) return "NOT_OPEN";
       const current=await client.query("SELECT id FROM lwf_tickets WHERE id=$1 AND status='open' FOR UPDATE",[ticketId]);
       if (!current.rowCount) return "NOT_OPEN";
-      const updated=await client.query(`UPDATE lwf_tickets SET title=$1,description=$2,priority=$3,queue_priority=$4,
-        auto_commit=$5,auto_push=$6,auto_pull_request=$7,auto_deploy=$8,create_tag=$9,release_tag=$10,updated_at=now()
-        WHERE id=$11 RETURNING *`,[
+      const updated=await client.query(`UPDATE lwf_tickets SET title=$1,description=$2,priority=$3,queue_priority=$4,ai_model=$5,
+        auto_commit=$6,auto_push=$7,auto_pull_request=$8,auto_deploy=$9,create_tag=$10,release_tag=$11,updated_at=now()
+        WHERE id=$12 RETURNING *`,[
         parsed.data.title,parsed.data.description,parsed.data.priority,parsed.data.queuePriority,
+        parsed.data.aiModel,
         parsed.data.autoCommit,parsed.data.autoPush,parsed.data.autoPullRequest,parsed.data.autoDeploy,
         parsed.data.createTag,parsed.data.releaseTag,ticketId,
       ]);
@@ -201,9 +203,9 @@ export async function POST(request:Request, context:{params:Promise<{id:string}>
       if (!source.rowCount) return null;
       const ticket=source.rows[0];
       const created=await client.query(`INSERT INTO lwf_tickets(
-        application_id,title,description,priority,queue_priority,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,[
-        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.queue_priority,ticket.auto_commit,ticket.auto_push,
+        application_id,title,description,priority,queue_priority,ai_model,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[
+        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.queue_priority,ticket.ai_model,ticket.auto_commit,ticket.auto_push,
         ticket.auto_pull_request,ticket.auto_deploy,ticket.create_tag,ticket.release_tag,
       ]);
       await client.query("INSERT INTO lwf_executions(ticket_id,application_id) VALUES($1,$2)",[created.rows[0].id,ticket.application_id]);
