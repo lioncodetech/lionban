@@ -11,7 +11,7 @@ Central pessoal para registrar bugs e delegar correções ao Codex, sempre no re
 1. Crie um serviço PostgreSQL e aplique `db/schema.sql`.
 2. Crie os serviços `web` (Dockerfile) e `worker` (Dockerfile.worker) usando as mesmas variáveis de `.env.example`.
 3. Use um GitHub fine-grained token restrito apenas aos repositórios desejados, com `Contents: Read and write`. Para criar Pull Requests automaticamente, conceda também `Pull requests: Read and write`.
-4. Monte um volume persistente em `/home/node/.codex` no worker e autentique o Codex uma vez pelo terminal do EasyPanel. Se o volume antigo estava em `/root/.codex`, autentique novamente.
+4. Monte um volume persistente em `/home/node/.codex` no worker e autentique o Codex uma vez pelo terminal do EasyPanel. Se o volume antigo estava em `/root/.codex`, autentique novamente. O entrypoint corrige automaticamente o proprietário do volume e, em seguida, executa migração e worker como usuário `node`.
 5. Exponha somente o serviço web por HTTPS. PostgreSQL e worker permanecem privados.
 
 Use `?schema=lionworkforce` na `DATABASE_URL` dos serviços web e worker. O driver configura `search_path=lionworkforce,public`, e a migração `011_lwf_schema` cria o schema e move para ele todas as estruturas `lwf_*` existentes sem apagar os dados.
