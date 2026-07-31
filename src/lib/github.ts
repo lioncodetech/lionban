@@ -25,3 +25,21 @@ export async function listRecentRepositoryActions(fullName:string) {
   const result=await response.json() as {workflow_runs:RepositoryActionRun[]};
   return result.workflow_runs;
 }
+export type PullRequestStatus={number:number;state:"open"|"closed";merged:boolean;mergeCommitSha:string|null;htmlUrl:string};
+export async function getPullRequestStatus(fullName:string,number:number):Promise<PullRequestStatus> {
+  const response=await fetch(`${api}/repos/${fullName}/pulls/${number}`,{
+    headers:headers(),cache:"no-store",signal:AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
+  const result=await response.json() as {number:number;state:"open"|"closed";merged:boolean;merge_commit_sha:string|null;html_url:string};
+  return {number:result.number,state:result.state,merged:result.merged,mergeCommitSha:result.merge_commit_sha,htmlUrl:result.html_url};
+}
+
+export async function defaultBranchContainsCommit(fullName:string,commit:string,defaultBranch:string) {
+  const response=await fetch(`${api}/repos/${fullName}/compare/${encodeURIComponent(commit)}...${encodeURIComponent(defaultBranch)}`,{
+    headers:headers(),cache:"no-store",signal:AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) return false;
+  const result=await response.json() as {status:string};
+  return result.status==="identical" || result.status==="ahead";
+}

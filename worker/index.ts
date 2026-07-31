@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
-import { validateRepo } from "../src/lib/github";
+import { defaultBranchContainsCommit, getPullRequestStatus, validateRepo } from "../src/lib/github";
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
@@ -369,6 +369,67 @@ async function recoverInterruptedJobs() {
     if (recovered.rowCount) console.log(`${recovered.rowCount} execução(ões) recuperada(s)`);
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
+async function reconcilePublishedWork() {
+  const pullRequests=await db.query<{
+    ticket_id:number;execution_id:string;application_id:string;title:string;full_name:string;pull_request_number:number;
+  }>(`SELECT t.id ticket_id,e.id execution_id,t.application_id,t.title,a.full_name,
+      (SELECT (event.metadata->>'number')::integer FROM lwf_events event
+       WHERE event.ticket_id=t.id AND event.kind='pull_request.created' ORDER BY event.created_at DESC LIMIT 1) pull_request_number
+    FROM lwf_tickets t
+    JOIN lwf_applications a ON a.id=t.application_id
+    JOIN LATERAL (SELECT id FROM lwf_executions WHERE ticket_id=t.id ORDER BY attempt DESC LIMIT 1) e ON true
+    WHERE t.status='approval' AND t.auto_pull_request=true
+    LIMIT 20`);
+  for (const item of pullRequests.rows) {
+    if (!item.pull_request_number) continue;
+    const pullRequest=await getPullRequestStatus(item.full_name,item.pull_request_number).catch(()=>null);
+    if (!pullRequest || pullRequest.state==="open") continue;
+    if (pullRequest.merged) {
+      await db.query("UPDATE lwf_tickets SET status='completed',result_summary=$1,updated_at=now() WHERE id=$2",[
+        `Pull Request #${pullRequest.number} integrado: ${pullRequest.htmlUrl}`,item.ticket_id,
+      ]);
+      await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[item.execution_id]);
+      await db.query("UPDATE lwf_approvals SET decision='approved',decided_at=now() WHERE ticket_id=$1 AND decision IS NULL",[item.ticket_id]);
+      if (pullRequest.mergeCommitSha) {
+        const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${item.ticket_id}: ${item.title}\nCommit: ${pullRequest.mergeCommitSha}\nIntegração: Pull Request #${pullRequest.number}`;
+        await db.query(`UPDATE lwf_applications SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1),20000) WHERE id=$2`,[
+          historyEntry,item.application_id,
+        ]);
+      }
+      await db.query("INSERT INTO lwf_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,'merge.completed','Pull Request integrado e confirmado no GitHub',$3)",[
+        item.ticket_id,item.execution_id,{number:pullRequest.number,url:pullRequest.htmlUrl,commit:pullRequest.mergeCommitSha},
+      ]);
+    } else {
+      await db.query("UPDATE lwf_tickets SET status='failed',result_summary='Pull Request fechado sem merge',updated_at=now() WHERE id=$1",[item.ticket_id]);
+      await db.query("UPDATE lwf_executions SET state='rejected',finished_at=now() WHERE id=$1",[item.execution_id]);
+      await db.query("UPDATE lwf_approvals SET decision='rejected',decided_at=now() WHERE ticket_id=$1 AND decision IS NULL",[item.ticket_id]);
+      await db.query("INSERT INTO lwf_events(ticket_id,execution_id,kind,message) VALUES($1,$2,'approval.rejected','Pull Request fechado sem integração')",[
+        item.ticket_id,item.execution_id,
+      ]);
+    }
+  }
+
+  const uncertainMerges=await db.query<{
+    ticket_id:number;execution_id:string;full_name:string;default_branch:string;commit:string;
+  }>(`SELECT t.id ticket_id,e.id execution_id,a.full_name,a.default_branch,
+      (SELECT event.metadata->>'commit' FROM lwf_events event
+       WHERE event.ticket_id=t.id AND event.kind='merge.prepared' ORDER BY event.created_at DESC LIMIT 1) commit
+    FROM lwf_tickets t
+    JOIN lwf_applications a ON a.id=t.application_id
+    JOIN LATERAL (SELECT id FROM lwf_executions WHERE ticket_id=t.id ORDER BY attempt DESC LIMIT 1) e ON true
+    WHERE t.status='failed' AND t.auto_pull_request=false
+      AND EXISTS(SELECT 1 FROM lwf_events event WHERE event.ticket_id=t.id AND event.kind='merge.prepared')
+      AND NOT EXISTS(SELECT 1 FROM lwf_events event WHERE event.ticket_id=t.id AND event.kind='merge.completed')
+    LIMIT 20`);
+  for (const item of uncertainMerges.rows) {
+    if (!item.commit || !await defaultBranchContainsCommit(item.full_name,item.commit,item.default_branch).catch(()=>false)) continue;
+    await db.query("UPDATE lwf_tickets SET status='completed',result_summary='Integração confirmada após recuperação',updated_at=now() WHERE id=$1",[item.ticket_id]);
+    await db.query("UPDATE lwf_executions SET state='completed',finished_at=now(),error_message=NULL WHERE id=$1",[item.execution_id]);
+    await db.query("INSERT INTO lwf_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,'merge.completed','Integração confirmada por reconciliação com o GitHub',$3)",[
+      item.ticket_id,item.execution_id,{commit:item.commit,reconciled:true},
+    ]);
+  }
+}
 async function publishChanges(job:Job, repo:string, branch:string, approvedResume=false) {
   if (!job.auto_commit) {
     if (approvedResume || job.priority==="low" || job.priority==="medium") {
@@ -406,13 +467,15 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   await git(["checkout",safe(job.default_branch)],repo);
   await git(["pull","--ff-only","origin",safe(job.default_branch)],repo);
   await git(["merge","--no-ff",branch,"-m",job.title.trim().slice(0,200)],repo);
+  const mergedCommit=(await git(["rev-parse","HEAD"],repo)).trim();
+  await event(job,"merge.prepared","Merge preparado localmente; confirmando publicação",{commit:mergedCommit});
   await git(["push","origin",safe(job.default_branch)],repo);
+  await event(job,"merge.pushed","Commit integrado e enviado à branch principal",{commit:mergedCommit});
   if (job.create_tag && job.release_tag) {
     await git(["tag","-a",safe(job.release_tag),"-m",`Release ${job.release_tag} - LionWorkForce chamado #${job.ticket_id}`],repo);
     await git(["push","origin",safe(job.release_tag)],repo);
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
-  const mergedCommit=(await git(["rev-parse","HEAD"],repo)).trim();
   await synchronizeProjectContext(job,repo);
   const integratedFiles=(await git(["diff-tree","--no-commit-id","--name-only","-r",branch],repo)).split(/\r?\n/).filter(Boolean);
   const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${job.ticket_id}: ${job.title}\nCommit: ${mergedCommit}\nArquivos: ${integratedFiles.join(", ") || "não identificados"}`;
@@ -607,6 +670,7 @@ async function applyRetentionPolicy() {
 async function main() {
   console.log(`${workerId} iniciado`);
   await recoverInterruptedJobs();
+  await reconcilePublishedWork();
   const status=await codexStatus();
   await heartbeat(status.authenticated,status.message);
   const timer=setInterval(() => heartbeat(status.authenticated,status.message).catch(error => console.error("heartbeat:",error)),10000);
@@ -616,6 +680,8 @@ async function main() {
   retentionTimer.unref();
   const recoveryTimer=setInterval(()=>recoverInterruptedJobs().catch(error=>console.error("recovery:",error)),30*1000);
   recoveryTimer.unref();
+  const reconciliationTimer=setInterval(()=>reconcilePublishedWork().catch(error=>console.error("reconciliation:",error)),30*1000);
+  reconciliationTimer.unref();
   const configuredConcurrency=Number(process.env.WORKER_MAX_CONCURRENCY ?? 2);
   const maxConcurrency=Number.isInteger(configuredConcurrency)&&configuredConcurrency>0
     ? Math.min(configuredConcurrency,10)

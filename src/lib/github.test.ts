@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { listRecentRepositoryActions } from "./github";
+import { defaultBranchContainsCommit, getPullRequestStatus, listRecentRepositoryActions } from "./github";
 
 describe("listRecentRepositoryActions", () => {
   afterEach(() => {
@@ -27,5 +27,21 @@ describe("listRecentRepositoryActions", () => {
       "https://api.github.com/repos/lion/repo/actions/runs?per_page=5",
       expect.objectContaining({ cache:"no-store" }),
     );
+  });
+});
+
+describe("GitHub publication checks",()=>{
+  afterEach(()=>vi.unstubAllGlobals());
+  it("normaliza o estado de um Pull Request",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      number:7,state:"closed",merged:true,merge_commit_sha:"abc123",html_url:"https://github.com/lion/repo/pull/7",
+    }),{status:200})));
+    await expect(getPullRequestStatus("lion/repo",7)).resolves.toEqual({
+      number:7,state:"closed",merged:true,mergeCommitSha:"abc123",htmlUrl:"https://github.com/lion/repo/pull/7",
+    });
+  });
+  it("confirma quando a branch principal contém o commit",async()=>{
+    vi.stubGlobal("fetch",vi.fn().mockResolvedValue(new Response(JSON.stringify({status:"ahead"}),{status:200})));
+    await expect(defaultBranchContainsCommit("lion/repo","abc","main")).resolves.toBe(true);
   });
 });

@@ -43,6 +43,7 @@ const eventLabels:Record<string,string> = {
   "execution.recovered":"Execução recuperada", "execution.retried":"Nova tentativa iniciada", "execution.failed":"Execução falhou",
   "execution.cancelled":"Execução cancelada", "execution.cancel_requested":"Cancelamento solicitado", "commit.created":"Commit criado",
   "branch.pushed":"Branch enviada", "pull_request.created":"Pull Request criado", "merge.completed":"Correção integrada",
+  "merge.prepared":"Integração preparada", "merge.pushed":"Integração publicada",
   "tag.created":"Versão criada", "deploy.started":"Deploy iniciado", "deploy.triggered":"Solicitação de deploy aceita", "deploy.completed":"Deploy concluído", "patch.prepared":"Correção preparada",
   "deploy.failed":"Falha ao confirmar deploy", "deploy.verification_required":"Verificação automática não configurada",
   "dependencies.installing":"Instalando dependências", "dependencies.installed":"Dependências instaladas",
