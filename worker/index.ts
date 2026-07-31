@@ -4,8 +4,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
+import { applicationContextSection } from "./project-context";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
@@ -299,6 +300,7 @@ async function claim():Promise<Job|null> {
     }
     const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
+      a.project_context,a.technical_history,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true
@@ -383,6 +385,12 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
   const mergedCommit=(await git(["rev-parse","HEAD"],repo)).trim();
+  const integratedFiles=(await git(["diff-tree","--no-commit-id","--name-only","-r",branch],repo)).split(/\r?\n/).filter(Boolean);
+  const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${job.ticket_id}: ${job.title}\nCommit: ${mergedCommit}\nArquivos: ${integratedFiles.join(", ") || "não identificados"}`;
+  await db.query(`UPDATE lwf_applications
+    SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1),20000)
+    WHERE id=$2`,[historyEntry,job.application_id]);
+  await event(job,"context.history_updated","Histórico técnico da aplicação atualizado",{commit:mergedCommit,files:integratedFiles});
   if (job.auto_deploy) await triggerDeploy(job,mergedCommit);
   await db.query("UPDATE lwf_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
   await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
@@ -460,7 +468,7 @@ async function processJob(job:Job) {
     const prompt=`Você está corrigindo o chamado #${job.ticket_id} do LionWorkForce.
 Título: ${job.title}
 Criticidade: ${{low:"Baixa",medium:"Média",high:"Alta",critical:"Crítica"}[job.priority]}
-Descrição: ${job.description}${attachmentNote}${baselineNote}
+Descrição: ${job.description}${attachmentNote}${baselineNote}${applicationContextSection(job.project_context,job.technical_history)}
 
 Fluxo obrigatório:
 1. Antes de alterar código, localize e leia a documentação e as instruções do projeto: AGENTS.md, README, CONTRIBUTING, CHANGELOG, a pasta docs/ e arquivos equivalentes que existirem.
@@ -480,6 +488,7 @@ Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
       const documentationPrompt=`A correção do chamado #${job.ticket_id} foi implementada, mas nenhum arquivo de documentação foi atualizado.
 Leia a documentação existente do projeto e documente objetivamente a mudança "${job.title}".
 Prefira atualizar o documento mais relevante. Se não existir, atualize README/CHANGELOG ou crie uma nota curta em docs/.
+${applicationContextSection(job.project_context,job.technical_history)}
 Não altere a implementação, não faça commit, push, merge ou deploy.`;
       const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
       await runControlled(process.env.CODEX_BIN ?? "codex",["exec","--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",documentationPrompt],repo,job,documentationEventId);

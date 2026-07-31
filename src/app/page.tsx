@@ -10,6 +10,7 @@ type App = {
   id:string; name:string; repo:string; language:string; branch:string; color:string; deployConfigured:boolean;
   deployVerificationConfigured:boolean; deployTimeoutMinutes:number;
   installCommand:string; testCommand:string; lintCommand:string; buildCommand:string; testEnvironmentKeys:string[]; testDatabaseSchema:string;
+  projectContext:string; technicalHistory:string;
 };
 type Ticket = { id:number; appId:string; title:string; description:string; priority:"Baixa"|"Média"|"Alta"|"Crítica"; queuePriority:number; status:Status; age:string; deployStatus:string };
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
@@ -46,6 +47,7 @@ const eventLabels:Record<string,string> = {
   "deploy.failed":"Falha ao confirmar deploy", "deploy.verification_required":"Verificação automática não configurada",
   "dependencies.installing":"Instalando dependências", "dependencies.installed":"Dependências instaladas",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
+  "context.history_updated":"Histórico técnico atualizado",
   "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
   "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
   "approval.completed":"Aprovação concluída",
@@ -100,6 +102,7 @@ export default function Home() {
   const [lintCommand, setLintCommand] = useState("");
   const [buildCommand, setBuildCommand] = useState("");
   const [testEnvironmentText,setTestEnvironmentText]=useState("");
+  const [projectContextText,setProjectContextText]=useState("");
   const [configSaving,setConfigSaving]=useState(false);
   const [configMessage,setConfigMessage]=useState("");
   const [archiveAfterDays,setArchiveAfterDays]=useState(7);
@@ -120,7 +123,7 @@ export default function Home() {
   const fileInput = useRef<HTMLInputElement>(null);
   const app = (id: string) => applicationList.find(a => a.id === id) ?? {
     id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
-    deployConfigured:false,deployVerificationConfigured:false,deployTimeoutMinutes:20,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],testDatabaseSchema:"",
+    deployConfigured:false,deployVerificationConfigured:false,deployTimeoutMinutes:20,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],testDatabaseSchema:"",projectContext:"",technicalHistory:"",
   };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -147,6 +150,7 @@ export default function Home() {
           lintCommand:String(row.lint_command ?? ""),buildCommand:String(row.build_command ?? ""),
           testEnvironmentKeys:Array.isArray(row.test_environment_keys)?row.test_environment_keys.map(String):[],
           testDatabaseSchema:String(row.test_database_schema ?? ""),
+          projectContext:String(row.project_context ?? ""),technicalHistory:String(row.technical_history ?? ""),
         })));
         setTickets(ticketRows.map((row: Record<string, unknown>) => ({
           id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
@@ -476,6 +480,7 @@ export default function Home() {
       installCommand:String(result.install_command ?? ""),testCommand:String(result.test_command ?? ""),
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
       testEnvironmentKeys:[],testDatabaseSchema:"",
+      projectContext:String(result.project_context ?? ""),technicalHistory:String(result.technical_history ?? ""),
     };
     setApplicationList(current => [...current.filter(item => item.repo !== imported.repo), imported]);
     setImporting(null); setImportModal(false); setView("apps");
@@ -492,6 +497,7 @@ export default function Home() {
         deployTimeoutMinutes,
         installCommand:installCommand.trim(),testCommand:testCommand.trim(),
         lintCommand:lintCommand.trim(),buildCommand:buildCommand.trim(),
+        projectContext:projectContextText.trim(),
         testEnvironment:testEnvironmentText.trim()?Object.fromEntries(testEnvironmentText.split(/\r?\n/).filter(line=>line.includes("=")).map(line=>{
           const separator=line.indexOf("="); return [line.slice(0,separator).trim(),line.slice(separator+1)];
         })):undefined,
@@ -509,12 +515,14 @@ export default function Home() {
       lintCommand:String(result.lint_command ?? ""),buildCommand:String(result.build_command ?? ""),
       testEnvironmentKeys:Array.isArray(result.test_environment_keys)?result.test_environment_keys.map(String):item.testEnvironmentKeys,
       testDatabaseSchema:String(result.test_database_schema ?? ""),
+      projectContext:String(result.project_context ?? ""),technicalHistory:String(result.technical_history ?? ""),
     } : item));
     setConfigApp(current=>current?{
       ...current,deployConfigured:Boolean(result.deploy_configured),
       deployVerificationConfigured:Boolean(result.deploy_verification_configured),deployTimeoutMinutes:Number(result.deploy_timeout_minutes ?? 20),
       testEnvironmentKeys:Array.isArray(result.test_environment_keys)?result.test_environment_keys.map(String):current.testEnvironmentKeys,
       testDatabaseSchema:String(result.test_database_schema ?? ""),
+      projectContext:String(result.project_context ?? ""),technicalHistory:String(result.technical_history ?? ""),
     }:current);
     setTestEnvironmentText(""); setConfigSaving(false);
     setConfigMessage(`Configuração salva${result.test_database_schema?` — schema ${result.test_database_schema}`:""}.`);
@@ -585,7 +593,7 @@ export default function Home() {
           setConfigApp(a); setDeployWebhookUrl(""); setDeployVerificationUrl(""); setDeployTimeoutMinutes(a.deployTimeoutMinutes); setRemoveDeployWebhook(false);
           setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
           setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
-          setTestEnvironmentText(""); setConfigMessage("");
+          setTestEnvironmentText(""); setProjectContextText(a.projectContext); setConfigMessage("");
         }}>Configurar →</button></footer>
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div> :
       <form className="settings-panel" onSubmit={saveSettings}><h2>Retenção dos chamados</h2><p>O prazo é contado desde a conclusão ou falha. O worker aplica a limpeza automaticamente.</p><div className="command-grid"><label>Arquivar depois de<input type="number" min={1} max={3650} value={archiveAfterDays} onChange={e=>setArchiveAfterDays(Number(e.target.value))} /><small>dias</small></label><label>Excluir definitivamente depois de<input type="number" min={2} max={3650} value={deleteAfterDays} onChange={e=>setDeleteAfterDays(Number(e.target.value))} /><small>dias</small></label></div><button className="primary" disabled={deleteAfterDays<=archiveAfterDays}>Salvar configurações</button></form>}
@@ -623,6 +631,8 @@ export default function Home() {
         <label>Comando de lint<input value={lintCommand} onChange={e=>setLintCommand(e.target.value)} placeholder="npm run lint" /></label>
         <label>Comando de build<input value={buildCommand} onChange={e=>setBuildCommand(e.target.value)} placeholder="npm run build" /></label>
       </div>
+      <label>Contexto permanente do projeto<textarea maxLength={30000} value={projectContextText} onChange={e=>{setProjectContextText(e.target.value);setConfigMessage("");}} placeholder={"## Arquitetura e pastas principais\n...\n\n## Regras de negócio importantes\n...\n\n## Comandos corretos de teste\n...\n\n## Componentes que não devem ser alterados\n...\n\n## Padrões visuais\n...\n\n## Limitações conhecidas\n...\n\n## Ambiente de execução\n...\n\n## Como reproduzir e validar funcionalidades\n..."} /><small>Este conteúdo será enviado ao Codex em todos os chamados desta aplicação. {projectContextText.length.toLocaleString("pt-BR")}/30.000 caracteres.</small></label>
+      {configApp.technicalHistory&&<details className="project-history"><summary>Ver histórico técnico integrado</summary><pre>{configApp.technicalHistory}</pre><small>Atualizado automaticamente somente depois que uma correção é integrada à branch principal.</small></details>}
       <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>{setTestEnvironmentText(e.target.value);setConfigMessage("");}} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}${configApp.testDatabaseSchema?` — schema atual: ${configApp.testDatabaseSchema}`:" — nenhum parâmetro schema detectado"}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
       {configMessage&&<div className={configMessage.startsWith("Configuração salva")?"config-success":"import-error"}>{configMessage}</div>}
       <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>

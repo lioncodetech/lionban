@@ -15,6 +15,7 @@ const workforceRenameVersion = "010_lwf_rename";
 const workforceSchemaVersion = "011_lwf_schema";
 const shadowCleanupVersion = "012_lwf_shadow_cleanup";
 const deployMonitoringVersion = "013_lwf_deploy_monitoring";
+const applicationContextVersion = "014_lwf_application_context";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -232,6 +233,14 @@ async function migrate() {
       await client.query("ALTER TABLE lionworkforce.lwf_worker_control ADD COLUMN IF NOT EXISTS pause_reason text");
       await client.query("ALTER TABLE lionworkforce.lwf_worker_control ADD COLUMN IF NOT EXISTS deploy_ticket_id bigint REFERENCES lionworkforce.lwf_tickets(id) ON DELETE SET NULL");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [deployMonitoringVersion]);
+      await client.query("COMMIT");
+    }
+    const applicationContextApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [applicationContextVersion]);
+    if (!applicationContextApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS project_context text NOT NULL DEFAULT ''");
+      await client.query("ALTER TABLE lionworkforce.lwf_applications ADD COLUMN IF NOT EXISTS technical_history text NOT NULL DEFAULT ''");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [applicationContextVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {

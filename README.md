@@ -25,6 +25,10 @@ O login usa `ADMIN_USERNAME` (padrão `admin` quando ausente) e `ADMIN_PASSWORD_
 
 Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos processos daquele repositório. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis os segredos internos do LionWorkForce.
 
+Cada aplicação também pode ter um **contexto permanente do projeto**, enviado em todos os chamados daquele repositório. Use esse campo para registrar arquitetura, regras de negócio, comandos de validação, componentes protegidos, padrões visuais, limitações e ambiente de execução. Depois que uma correção é realmente integrada à branch principal, o worker acrescenta ao histórico técnico da aplicação o chamado, o commit e os arquivos alterados. Execuções falhadas, patches isolados e mudanças ainda não integradas não entram nesse histórico.
+
+O prompt reutilizável para preparar essa documentação está em [`docs/PROMPT_CONTEXTO_PROJETO.md`](docs/PROMPT_CONTEXTO_PROJETO.md).
+
 Ao criar, editar ou duplicar um chamado, é possível anexar até cinco imagens. Quando duas ou mais imagens são enviadas, os nomes recebem sufixos sequenciais antes da extensão (`imagem1.png`, `imagem2.png` e assim por diante); ao duplicar, esses sufixos são preservados sem repetição. O nome de uma imagem enviada sozinha é preservado. Clique na miniatura de uma imagem anexada para ampliá-la em um popup; o mesmo recurso está disponível na galeria do detalhe do chamado. Clique fora da imagem ou no botão de fechar para retornar.
 
 O Deployment Trigger do EasyPanel apenas confirma que a solicitação foi aceita. Por isso, o chamado mostra o deploy como em curso até o usuário confirmar, no histórico do EasyPanel, que ele terminou; falhas HTTP ao disparar o webhook são registradas automaticamente.

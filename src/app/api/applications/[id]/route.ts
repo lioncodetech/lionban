@@ -15,6 +15,7 @@ const verificationUrl=z.string().trim().max(2048).refine(value => {
   try { return new URL(value).protocol === "https:"; } catch { return false; }
 },"Use uma URL HTTPS");
 const testEnvironment=z.record(z.string().regex(/^[A-Z_][A-Z0-9_]*$/),z.string().max(4000)).optional();
+const projectContext=z.string().trim().max(30000);
 const input = z.object({
   deployWebhookUrl:deployWebhookUrl.nullable().optional(),
   deployVerificationUrl:verificationUrl.nullable().optional(),
@@ -24,6 +25,7 @@ const input = z.object({
   lintCommand:command,
   buildCommand:command,
   testEnvironment,
+  projectContext,
 });
 
 export async function PATCH(request:Request, context:{ params:Promise<{ id:string }> }) {
@@ -39,9 +41,11 @@ export async function PATCH(request:Request, context:{ params:Promise<{ id:strin
       deploy_timeout_minutes=$5,
       install_command=NULLIF($6,''),test_command=NULLIF($7,''),
       lint_command=NULLIF($8,''),build_command=NULLIF($9,''),
-      test_environment=CASE WHEN $10::boolean THEN $11::jsonb ELSE test_environment END
-     WHERE id=$12
+      test_environment=CASE WHEN $10::boolean THEN $11::jsonb ELSE test_environment END,
+      project_context=$12
+     WHERE id=$13
      RETURNING id,install_command,test_command,lint_command,build_command,
+       project_context,technical_history,
        deploy_webhook_url IS NOT NULL deploy_configured,
        deploy_verification_url IS NOT NULL deploy_verification_configured,
        deploy_timeout_minutes,
@@ -55,7 +59,8 @@ export async function PATCH(request:Request, context:{ params:Promise<{ id:strin
       parsed.data.deployTimeoutMinutes,
       parsed.data.installCommand,parsed.data.testCommand,
       parsed.data.lintCommand,parsed.data.buildCommand,
-      parsed.data.testEnvironment !== undefined,JSON.stringify(parsed.data.testEnvironment ?? {}),id,
+      parsed.data.testEnvironment !== undefined,JSON.stringify(parsed.data.testEnvironment ?? {}),
+      parsed.data.projectContext,id,
     ],
   );
   return result.rowCount ? NextResponse.json(result.rows[0]) : NextResponse.json({ error:"Aplicação não encontrada" }, { status:404 });
