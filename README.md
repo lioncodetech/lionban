@@ -27,6 +27,8 @@ Em **Aplicações → Configurar**, cada repositório pode receber comandos pró
 
 Cada aplicação também pode ter um **contexto permanente do projeto**, enviado em todos os chamados daquele repositório. Use esse campo para registrar arquitetura, regras de negócio, comandos de validação, componentes protegidos, padrões visuais, limitações e ambiente de execução. Depois que uma correção é realmente integrada à branch principal, o worker acrescenta ao histórico técnico da aplicação o chamado, o commit e os arquivos alterados. Execuções falhadas, patches isolados e mudanças ainda não integradas não entram nesse histórico.
 
+O arquivo `docs/PROJECT_CONTEXT.md` de cada repositório é a fonte oficial desse contexto. O worker o sincroniza ao clonar a branch principal e novamente depois de uma integração, e o Codex o revisa durante a correção. Isso também incorpora no chamado seguinte documentos integrados por Pull Request no GitHub. Arquivos ausentes, vazios ou acima de 30.000 caracteres não substituem o último contexto válido; o motivo aparece nos eventos do chamado.
+
 O prompt reutilizável para preparar essa documentação está em [`docs/PROMPT_CONTEXTO_PROJETO.md`](docs/PROMPT_CONTEXTO_PROJETO.md).
 
 Ao criar, editar ou duplicar um chamado, é possível anexar até cinco imagens. Quando duas ou mais imagens são enviadas, os nomes recebem sufixos sequenciais antes da extensão (`imagem1.png`, `imagem2.png` e assim por diante); ao duplicar, esses sufixos são preservados sem repetição. O nome de uma imagem enviada sozinha é preservado. Clique na miniatura de uma imagem anexada para ampliá-la em um popup; o mesmo recurso está disponível na galeria do detalhe do chamado. Clique fora da imagem ou no botão de fechar para retornar.

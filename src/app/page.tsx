@@ -48,6 +48,7 @@ const eventLabels:Record<string,string> = {
   "dependencies.installing":"Instalando dependências", "dependencies.installed":"Dependências instaladas",
   "documentation.started":"Documentando a correção", "documentation.updated":"Documentação atualizada",
   "context.history_updated":"Histórico técnico atualizado",
+  "context.synchronized":"Contexto permanente sincronizado", "context.sync_skipped":"Sincronização do contexto ignorada",
   "approval.requested":"Aprovação solicitada", "approval.approved":"Correção aprovada",
   "approval.rejected":"Correção rejeitada", "approval.restored":"Patch aprovado restaurado",
   "approval.completed":"Aprovação concluída",

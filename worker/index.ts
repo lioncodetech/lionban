@@ -4,7 +4,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { validateRepo } from "../src/lib/github";
-import { applicationContextSection } from "./project-context";
+import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
@@ -236,6 +236,30 @@ async function requestApproval(job:Job, reason:string) {
   await db.query("UPDATE lwf_executions SET state='waiting_approval' WHERE id=$1",[job.execution_id]);
   await event(job,"approval.requested","Aprovação do usuário solicitada",{reason});
 }
+async function synchronizeProjectContext(job:Job, repo:string) {
+  let content:string|null=null;
+  try {
+    content=await readFile(path.join(repo,"docs","PROJECT_CONTEXT.md"),"utf8");
+  } catch(error) {
+    if (!(error instanceof Error && "code" in error && error.code==="ENOENT")) throw error;
+  }
+  const document=normalizeProjectContextDocument(content);
+  if (document.status!=="ready") {
+    const messages={
+      missing:"docs/PROJECT_CONTEXT.md não existe; contexto permanente anterior foi mantido",
+      empty:"docs/PROJECT_CONTEXT.md está vazio; contexto permanente anterior foi mantido",
+      too_large:"docs/PROJECT_CONTEXT.md ultrapassa 30.000 caracteres; contexto permanente anterior foi mantido",
+    };
+    await event(job,"context.sync_skipped",messages[document.status],{reason:document.status});
+    return null;
+  }
+  if (document.content!==job.project_context) {
+    await db.query("UPDATE lwf_applications SET project_context=$1 WHERE id=$2",[document.content,job.application_id]);
+    job.project_context=document.content;
+    await event(job,"context.synchronized","Contexto permanente sincronizado com docs/PROJECT_CONTEXT.md");
+  }
+  return document.content;
+}
 async function finishApprovedPatchOnly(job:Job, summary:string) {
   await db.query("UPDATE lwf_tickets SET status='completed',result_summary=$1,updated_at=now() WHERE id=$2",[summary,job.ticket_id]);
   await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
@@ -385,6 +409,7 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
     await event(job,"tag.created",`Tag ${job.release_tag} criada e enviada; GitHub Actions por tag podem ser iniciadas`,{tag:job.release_tag});
   }
   const mergedCommit=(await git(["rev-parse","HEAD"],repo)).trim();
+  await synchronizeProjectContext(job,repo);
   const integratedFiles=(await git(["diff-tree","--no-commit-id","--name-only","-r",branch],repo)).split(/\r?\n/).filter(Boolean);
   const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${job.ticket_id}: ${job.title}\nCommit: ${mergedCommit}\nArquivos: ${integratedFiles.join(", ") || "não identificados"}`;
   await db.query(`UPDATE lwf_applications
@@ -410,6 +435,7 @@ async function processJob(job:Job) {
     await git(["config","user.email",process.env.GIT_AUTHOR_EMAIL?.trim() || "lionworkforce@users.noreply.github.com"],repo);
     await db.query("UPDATE lwf_tickets SET branch_name=$1,base_commit=$2 WHERE id=$3",[branch,base,job.ticket_id]);
     await event(job,"repository.cloned",`Repositório ${job.full_name} validado e clonado`,{branch,base});
+    await synchronizeProjectContext(job,repo);
     await assertNotCancelled(job);
     let installCommand=job.install_command;
     if (!installCommand) {
@@ -474,8 +500,9 @@ Fluxo obrigatório:
 1. Antes de alterar código, localize e leia a documentação e as instruções do projeto: AGENTS.md, README, CONTRIBUTING, CHANGELOG, a pasta docs/ e arquivos equivalentes que existirem.
 2. Siga as convenções, comandos e arquitetura documentados pelo próprio projeto.
 3. Primeiro reproduza o bug com um teste que falha. Depois faça a menor correção segura.
-4. Ao terminar a correção, atualize a documentação afetada para refletir o comportamento novo. Se não existir documentação específica, atualize README, CHANGELOG ou crie uma nota curta em docs/.
-5. Execute os testes relevantes e produza um resumo final, incluindo quais documentos foram consultados e atualizados.
+4. Revise docs/PROJECT_CONTEXT.md. Se não existir, crie-o de forma concisa com informações confirmadas no repositório. Atualize-o quando esta correção alterar arquitetura, regras de negócio, comandos, componentes protegidos, padrões visuais, limitações, ambiente ou formas de validação. Mantenha o arquivo com no máximo 30.000 caracteres e nunca inclua segredos.
+5. Atualize também a documentação específica afetada pelo comportamento novo. Se não existir, atualize README, CHANGELOG ou crie uma nota curta em docs/.
+6. Execute os testes relevantes e produza um resumo final, incluindo quais documentos foram consultados e atualizados.
 
 Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
     await db.query("UPDATE lwf_tickets SET status='fixing' WHERE id=$1",[job.ticket_id]);
@@ -488,6 +515,7 @@ Não faça commit, push, merge, deploy, nem acesse fora deste diretório.`;
       const documentationPrompt=`A correção do chamado #${job.ticket_id} foi implementada, mas nenhum arquivo de documentação foi atualizado.
 Leia a documentação existente do projeto e documente objetivamente a mudança "${job.title}".
 Prefira atualizar o documento mais relevante. Se não existir, atualize README/CHANGELOG ou crie uma nota curta em docs/.
+Revise também docs/PROJECT_CONTEXT.md. Crie-o se estiver ausente e atualize-o somente com fatos confirmados quando a correção afetar o contexto operacional permanente. Mantenha no máximo 30.000 caracteres e não inclua segredos.
 ${applicationContextSection(job.project_context,job.technical_history)}
 Não altere a implementação, não faça commit, push, merge ou deploy.`;
       const documentationEventId=await event(job,"documentation.started","Atualização obrigatória da documentação iniciada",{timeoutMinutes:Math.round(Math.max(60_000,Number(process.env.WORKER_JOB_TIMEOUT_MS ?? 30*60*1000))/60000),elapsedSeconds:0,lastSignal:new Date().toISOString(),prompt:documentationPrompt,transcript:[]});
