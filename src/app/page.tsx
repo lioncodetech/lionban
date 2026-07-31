@@ -303,11 +303,11 @@ export default function Home() {
     if (actionsResponse.ok) setRepoActions(await actionsResponse.json());
     if (attachmentsResponse.ok) {
       const stored=await attachmentsResponse.json() as StoredAttachment[];
-      setAttachments(stored.map(item=>{
+      setAttachments(stored.map((item,index)=>{
         const binary=atob(item.data);
         const bytes=new Uint8Array(binary.length);
         for (let index=0;index<binary.length;index++) bytes[index]=binary.charCodeAt(index);
-        const file=new File([bytes],item.name,{type:item.mimeType});
+        const file=new File([bytes],attachmentName(item.name,index),{type:item.mimeType});
         return {file,preview:URL.createObjectURL(file)};
       }));
     } else {
@@ -335,10 +335,10 @@ export default function Home() {
     if (actionsResponse.ok) setRepoActions(await actionsResponse.json());
     if (imagesResponse.ok) {
       const stored=await imagesResponse.json() as StoredAttachment[];
-      setAttachments(stored.map(item=>{
+      setAttachments(stored.map((item,index)=>{
         const binary=atob(item.data); const bytes=new Uint8Array(binary.length);
         for (let index=0;index<binary.length;index++) bytes[index]=binary.charCodeAt(index);
-        const file=new File([bytes],item.name,{type:item.mimeType});
+        const file=new File([bytes],attachmentName(item.name,index),{type:item.mimeType});
         return {file,preview:URL.createObjectURL(file)};
       }));
     }
@@ -391,7 +391,7 @@ export default function Home() {
       const dataUrl = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file);
       });
-      return { name:attachmentName(file.name, index, attachments.length), mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
+      return { name:attachmentName(file.name, index), mimeType:file.type, size:file.size, data:dataUrl.split(",")[1] };
       }));
       const response = await fetch(editingTicketId?`/api/tickets/${editingTicketId}`:"/api/tickets", {
       method:editingTicketId?"PATCH":"POST", headers:{"content-type":"application/json"},
@@ -420,7 +420,11 @@ export default function Home() {
     if (accepted.length !== files.length) setDataError("Use imagens PNG, JPEG, WebP ou GIF de até 5 MB.");
     setAttachments(current => {
       const room = Math.max(0, 5 - current.length);
-      return [...current, ...accepted.slice(0, room).map(file => ({ file, preview:URL.createObjectURL(file) }))];
+      const additions=accepted.slice(0, room).map((file,index) => {
+        const numberedFile=new File([file],attachmentName(file.name,current.length+index),{type:file.type,lastModified:file.lastModified});
+        return {file:numberedFile,preview:URL.createObjectURL(numberedFile)};
+      });
+      return [...current,...additions];
     });
   }
   function pasteImages(event: ClipboardEvent<HTMLFormElement>) {
@@ -431,7 +435,16 @@ export default function Home() {
     event.preventDefault(); addImages(Array.from(event.dataTransfer.files));
   }
   function removeImage(index: number) {
-    setAttachments(current => { URL.revokeObjectURL(current[index].preview); return current.filter((_, itemIndex) => itemIndex !== index); });
+    setAttachments(current => {
+      URL.revokeObjectURL(current[index].preview);
+      return current.filter((_,itemIndex)=>itemIndex!==index).map((item,itemIndex)=>{
+        const name=attachmentName(item.file.name,itemIndex);
+        if (item.file.name===name) return item;
+        URL.revokeObjectURL(item.preview);
+        const file=new File([item.file],name,{type:item.file.type,lastModified:item.file.lastModified});
+        return {file,preview:URL.createObjectURL(file)};
+      });
+    });
   }
 
   async function openImport() {
