@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { transaction } from "@/lib/db";
+import { hasExpectedImageSignature } from "@/lib/attachment-security";
 
 const moveInput = z.object({
   status: z.enum(["open", "analyzing", "fixing", "testing", "approval", "completed", "failed"]),
@@ -9,7 +10,7 @@ const attachmentInput=z.object({
   name:z.string().min(1).max(180),
   mimeType:z.enum(["image/png","image/jpeg","image/webp","image/gif"]),
   size:z.number().int().positive().max(5*1024*1024),
-  data:z.string().max(7_500_000),
+  data:z.string().max(7_500_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
 });
 const editInput=z.object({
   edit:z.literal(true),
@@ -24,6 +25,10 @@ const editInput=z.object({
   createTag:z.boolean(),
   releaseTag:z.string().trim().regex(/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/).nullable(),
   attachments:z.array(attachmentInput).max(5),
+}).superRefine((value,context)=>{
+  if (value.attachments.reduce((total,item)=>total+item.size,0)>25*1024*1024) {
+    context.addIssue({code:"custom",path:["attachments"],message:"O total dos anexos não pode ultrapassar 25 MB"});
+  }
 });
 
 export async function GET(_request:Request, context:{params:Promise<{id:string}>}) {
@@ -31,8 +36,10 @@ export async function GET(_request:Request, context:{params:Promise<{id:string}>
   const ticket=await transaction(async client => {
     const result=await client.query("SELECT t.*,a.name application_name,a.full_name repository,a.default_branch FROM lwf_tickets t JOIN lwf_applications a ON a.id=t.application_id WHERE t.id=$1",[id]);
     if (!result.rowCount) return null;
-    const events=await client.query("SELECT id,kind,message,metadata,created_at FROM lwf_events WHERE ticket_id=$1 ORDER BY created_at",[id]);
-    const executions=await client.query("SELECT id,state,attempt,started_at,finished_at,error_message FROM lwf_executions WHERE ticket_id=$1 ORDER BY attempt",[id]);
+    const events=await client.query(`SELECT * FROM (
+      SELECT id,kind,message,metadata,created_at FROM lwf_events WHERE ticket_id=$1 ORDER BY created_at DESC LIMIT 500
+    ) recent ORDER BY created_at`,[id]);
+    const executions=await client.query("SELECT id,state,attempt,started_at,finished_at,error_message FROM lwf_executions WHERE ticket_id=$1 ORDER BY attempt DESC LIMIT 50",[id]);
     const approvals=await client.query(`SELECT ap.id,ap.reason,ap.decision,ap.decided_at,ap.created_at,
       EXISTS(SELECT 1 FROM lwf_artifacts ar WHERE ar.ticket_id=ap.ticket_id AND ar.kind='patch') patch_available
       FROM lwf_approvals ap WHERE ap.ticket_id=$1 ORDER BY ap.created_at DESC`,[id]);
@@ -68,6 +75,7 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       for (const attachment of parsed.data.attachments) {
         const content=Buffer.from(attachment.data,"base64");
         if (content.byteLength!==attachment.size) throw new Error("ATTACHMENT_SIZE_MISMATCH");
+        if (!hasExpectedImageSignature(content,attachment.mimeType)) throw new Error("ATTACHMENT_CONTENT_INVALID");
         await client.query(`INSERT INTO lwf_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
           VALUES($1,'screenshot',$2,$3,$4,$5,$6)`,[
           ticketId,attachment.name,`db://${ticketId}/${attachment.name}`,attachment.mimeType,attachment.size,content,

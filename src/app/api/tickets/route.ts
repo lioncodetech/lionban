@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { query, transaction } from "@/lib/db";
+import { hasExpectedImageSignature } from "@/lib/attachment-security";
 
 const ticketInput = z.object({
   applicationId: z.string().uuid(),
@@ -18,15 +19,22 @@ const ticketInput = z.object({
     name: z.string().min(1).max(180),
     mimeType: z.enum(["image/png","image/jpeg","image/webp","image/gif"]),
     size: z.number().int().positive().max(5 * 1024 * 1024),
-    data: z.string().max(7_500_000),
+    data: z.string().max(7_500_000).regex(/^[A-Za-z0-9+/]*={0,2}$/),
   })).max(5).default([]),
+}).superRefine((value,context)=>{
+  if (value.attachments.reduce((total,item)=>total+item.size,0)>25*1024*1024) {
+    context.addIssue({code:"custom",path:["attachments"],message:"O total dos anexos não pode ultrapassar 25 MB"});
+  }
 });
 export async function GET(request:Request) {
-  const archived=new URL(request.url).searchParams.get("archived")==="true";
+  const searchParams=new URL(request.url).searchParams;
+  const archived=searchParams.get("archived")==="true";
+  const requestedLimit=Number(searchParams.get("limit") ?? 250);
+  const limit=Number.isInteger(requestedLimit)?Math.min(Math.max(requestedLimit,1),500):250;
   const result = await query(`SELECT t.*, a.name application_name, a.full_name repository
     FROM lwf_tickets t JOIN lwf_applications a ON a.id=t.application_id
     WHERE ${archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL"}
-    ORDER BY t.created_at DESC`);
+    ORDER BY t.created_at DESC LIMIT $1`,[limit]);
   return NextResponse.json(result.rows);
 }
 export async function POST(request: Request) {
@@ -45,6 +53,7 @@ export async function POST(request: Request) {
     for (const attachment of parsed.data.attachments) {
       const content = Buffer.from(attachment.data, "base64");
       if (content.byteLength !== attachment.size) throw new Error("ATTACHMENT_SIZE_MISMATCH");
+      if (!hasExpectedImageSignature(content,attachment.mimeType)) throw new Error("ATTACHMENT_CONTENT_INVALID");
       await client.query(
         `INSERT INTO lwf_artifacts(ticket_id,kind,name,storage_key,mime_type,size_bytes,content)
          VALUES($1,'screenshot',$2,$3,$4,$5,$6)`,

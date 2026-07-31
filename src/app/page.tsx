@@ -138,7 +138,7 @@ export default function Home() {
     let initialLoad=true;
     let refreshing=false;
     async function loadData() {
-      if (refreshing) return;
+      if (refreshing || document.hidden) return;
       refreshing=true;
       try {
         const [appsResponse, ticketsResponse] = await Promise.all([
@@ -173,7 +173,7 @@ export default function Home() {
       }
     }
     loadData();
-    const timer=window.setInterval(loadData,5000);
+    const timer=window.setInterval(loadData,10000);
     return ()=>{ active=false; window.clearInterval(timer); };
   }, [view]);
 
@@ -189,6 +189,7 @@ export default function Home() {
     if (!detail) return;
     const ticketId=detail.id;
     const timer=window.setInterval(async ()=>{
+      if (document.hidden) return;
       const response=await fetch(`/api/tickets/${ticketId}`,{cache:"no-store"});
       if (response.ok) {
         const result=await response.json();

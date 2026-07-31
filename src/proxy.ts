@@ -6,6 +6,10 @@ export async function proxy(request:NextRequest) {
     return new NextResponse("LionWorkForce indisponível: autenticação não configurada.",{status:503,headers:{"content-type":"text/plain; charset=utf-8"}});
   }
   const path=request.nextUrl.pathname;
+  const contentLength=Number(request.headers.get("content-length") ?? 0);
+  if (Number.isFinite(contentLength)&&contentLength>40*1024*1024) {
+    return NextResponse.json({error:"Requisição acima do limite de 40 MB"},{status:413});
+  }
   if (path.startsWith("/api/") && !["GET","HEAD","OPTIONS"].includes(request.method)) {
     const origin=request.headers.get("origin");
     if (origin && origin!==request.nextUrl.origin) return NextResponse.json({error:"Origem não autorizada"},{status:403});

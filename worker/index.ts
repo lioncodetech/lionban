@@ -8,6 +8,8 @@ import { applicationContextSection, normalizeProjectContextDocument } from "./pr
 
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
+const maximumCapturedOutput=1_000_000;
+const appendOutput=(current:string,next:string)=>(current+next).slice(-maximumCapturedOutput);
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
 const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
 const codexSandboxMode = ["read-only","workspace-write","danger-full-access"].includes(configuredCodexSandbox)
@@ -44,7 +46,9 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
       cwd, env:{...codexEnvironment(),...env},
       shell:false, windowsHide:true, stdio:["ignore","pipe","pipe"],
     });
-    let output=""; child.stdout.on("data", d => output += d); child.stderr.on("data", d => output += d);
+    let output="";
+    child.stdout.on("data",d=>{ output=appendOutput(output,String(d)); });
+    child.stderr.on("data",d=>{ output=appendOutput(output,String(d)); });
     let timedOut=false;
     const timeout=setTimeout(()=>{ timedOut=true; child.kill("SIGTERM"); setTimeout(()=>child.kill("SIGKILL"),5000).unref(); },timeoutMs);
     child.on("close", code => {
@@ -109,14 +113,14 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
       } else if (record.type === "turn.started") { latestActivity="Analisando o chamado"; recordActivity("action",latestActivity); }
     };
     child.stdout.on("data",d => {
-      const text=String(d); output+=text; stdoutBuffer+=text;
+      const text=String(d); output=appendOutput(output,text); stdoutBuffer=(stdoutBuffer+text).slice(-100_000);
       const lines=stdoutBuffer.split(/\r?\n/); stdoutBuffer=lines.pop() ?? "";
       for (const line of lines) {
         try { activityFromEvent(JSON.parse(line)); } catch { /* ignora linhas não estruturadas */ }
       }
     });
     child.stderr.on("data",d => {
-      const text=String(d); output+=text; stderrBuffer+=text;
+      const text=String(d); output=appendOutput(output,text); stderrBuffer=(stderrBuffer+text).slice(-100_000);
       const lines=stderrBuffer.split(/\r?\n/); stderrBuffer=lines.pop() ?? "";
       for (const line of lines) {
         if (!/(error|warning|retry|rate.?limit|auth|login|connect|timeout|trusted directory|git.repo.check)/i.test(line)) continue;
@@ -612,10 +616,10 @@ async function main() {
   retentionTimer.unref();
   const recoveryTimer=setInterval(()=>recoverInterruptedJobs().catch(error=>console.error("recovery:",error)),30*1000);
   recoveryTimer.unref();
-  const configuredConcurrency=Number(process.env.WORKER_MAX_CONCURRENCY ?? 4);
+  const configuredConcurrency=Number(process.env.WORKER_MAX_CONCURRENCY ?? 2);
   const maxConcurrency=Number.isInteger(configuredConcurrency)&&configuredConcurrency>0
     ? Math.min(configuredConcurrency,10)
-    : 4;
+    : 2;
   const running=new Set<Promise<void>>();
   for (;;) {
     let claimed=false;
