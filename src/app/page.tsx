@@ -103,7 +103,6 @@ export default function Home() {
   const [lintCommand, setLintCommand] = useState("");
   const [buildCommand, setBuildCommand] = useState("");
   const [testEnvironmentText,setTestEnvironmentText]=useState("");
-  const [projectContextText,setProjectContextText]=useState("");
   const [configSaving,setConfigSaving]=useState(false);
   const [configMessage,setConfigMessage]=useState("");
   const [archiveAfterDays,setArchiveAfterDays]=useState(7);
@@ -125,6 +124,12 @@ export default function Home() {
   const app = (id: string) => applicationList.find(a => a.id === id) ?? {
     id,name:"Aplicação indisponível",repo:"Repositório removido",language:"—",branch:"—",color:"#829087",
     deployConfigured:false,deployVerificationConfigured:false,deployTimeoutMinutes:20,installCommand:"",testCommand:"",lintCommand:"",buildCommand:"",testEnvironmentKeys:[],testDatabaseSchema:"",projectContext:"",technicalHistory:"",
+  };
+  const projectContextUrl=(application:App,action:"blob"|"edit"|"new")=>{
+    const [owner,repository]=application.repo.split("/").map(encodeURIComponent);
+    const branch=encodeURIComponent(application.branch);
+    if (action==="new") return `https://github.com/${owner}/${repository}/new/${branch}?filename=docs%2FPROJECT_CONTEXT.md`;
+    return `https://github.com/${owner}/${repository}/${action}/${branch}/docs/PROJECT_CONTEXT.md`;
   };
   const visible = tickets.filter(t => `${t.title} ${app(t.appId).name}`.toLowerCase().includes(query.toLowerCase()));
 
@@ -498,7 +503,7 @@ export default function Home() {
         deployTimeoutMinutes,
         installCommand:installCommand.trim(),testCommand:testCommand.trim(),
         lintCommand:lintCommand.trim(),buildCommand:buildCommand.trim(),
-        projectContext:projectContextText.trim(),
+        projectContext:configApp.projectContext,
         testEnvironment:testEnvironmentText.trim()?Object.fromEntries(testEnvironmentText.split(/\r?\n/).filter(line=>line.includes("=")).map(line=>{
           const separator=line.indexOf("="); return [line.slice(0,separator).trim(),line.slice(separator+1)];
         })):undefined,
@@ -594,7 +599,7 @@ export default function Home() {
           setConfigApp(a); setDeployWebhookUrl(""); setDeployVerificationUrl(""); setDeployTimeoutMinutes(a.deployTimeoutMinutes); setRemoveDeployWebhook(false);
           setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
           setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
-          setTestEnvironmentText(""); setProjectContextText(a.projectContext); setConfigMessage("");
+          setTestEnvironmentText(""); setConfigMessage("");
         }}>Configurar →</button></footer>
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div> :
       <form className="settings-panel" onSubmit={saveSettings}><h2>Retenção dos chamados</h2><p>O prazo é contado desde a conclusão ou falha. O worker aplica a limpeza automaticamente.</p><div className="command-grid"><label>Arquivar depois de<input type="number" min={1} max={3650} value={archiveAfterDays} onChange={e=>setArchiveAfterDays(Number(e.target.value))} /><small>dias</small></label><label>Excluir definitivamente depois de<input type="number" min={2} max={3650} value={deleteAfterDays} onChange={e=>setDeleteAfterDays(Number(e.target.value))} /><small>dias</small></label></div><button className="primary" disabled={deleteAfterDays<=archiveAfterDays}>Salvar configurações</button></form>}
@@ -632,7 +637,10 @@ export default function Home() {
         <label>Comando de lint<input value={lintCommand} onChange={e=>setLintCommand(e.target.value)} placeholder="npm run lint" /></label>
         <label>Comando de build<input value={buildCommand} onChange={e=>setBuildCommand(e.target.value)} placeholder="npm run build" /></label>
       </div>
-      <label>Contexto permanente do projeto<textarea maxLength={30000} value={projectContextText} onChange={e=>{setProjectContextText(e.target.value);setConfigMessage("");}} placeholder={"## Arquitetura e pastas principais\n...\n\n## Regras de negócio importantes\n...\n\n## Comandos corretos de teste\n...\n\n## Componentes que não devem ser alterados\n...\n\n## Padrões visuais\n...\n\n## Limitações conhecidas\n...\n\n## Ambiente de execução\n...\n\n## Como reproduzir e validar funcionalidades\n..."} /><small>Este conteúdo será enviado ao Codex em todos os chamados desta aplicação. {projectContextText.length.toLocaleString("pt-BR")}/30.000 caracteres.</small></label>
+      <section className="context-file">
+        <div><strong>Contexto permanente do projeto</strong><code>docs/PROJECT_CONTEXT.md</code><small>{configApp.projectContext?"Há um contexto sincronizado no LionWorkForce. O arquivo da branch principal continua sendo a fonte oficial.":"Nenhum contexto foi sincronizado ainda. Crie o arquivo na branch principal."}</small></div>
+        <nav><a href={projectContextUrl(configApp,"blob")} target="_blank" rel="noreferrer">Abrir arquivo</a><a href={projectContextUrl(configApp,configApp.projectContext?"edit":"new")} target="_blank" rel="noreferrer">{configApp.projectContext?"Editar no GitHub":"Criar no GitHub"}</a></nav>
+      </section>
       {configApp.technicalHistory&&<details className="project-history"><summary>Ver histórico técnico integrado</summary><pre>{configApp.technicalHistory}</pre><small>Atualizado automaticamente somente depois que uma correção é integrada à branch principal.</small></details>}
       <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>{setTestEnvironmentText(e.target.value);setConfigMessage("");}} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}${configApp.testDatabaseSchema?` — schema atual: ${configApp.testDatabaseSchema}`:" — nenhum parâmetro schema detectado"}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
       {configMessage&&<div className={configMessage.startsWith("Configuração salva")?"config-success":"import-error"}>{configMessage}</div>}
