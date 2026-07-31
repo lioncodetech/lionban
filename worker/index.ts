@@ -34,12 +34,16 @@ function codexEnvironment():NodeJS.ProcessEnv {
   }
   return environment;
 }
-function git(args:string[], cwd:string) {
+function git(
+  args:string[],
+  cwd:string,
+  timeoutMs=Math.max(30_000,Number(process.env.GIT_TIMEOUT_MS ?? 120_000)),
+) {
   const token=process.env.GITHUB_TOKEN;
   if (!token) throw new Error("GITHUB_TOKEN_NOT_CONFIGURED");
   const credentials=Buffer.from(`x-access-token:${token}`).toString("base64");
   return run("git",["-c",`http.extraHeader=Authorization: Basic ${credentials}`,...args],cwd,
-    {GIT_TERMINAL_PROMPT:"0",GCM_INTERACTIVE:"Never"},Math.max(30_000,Number(process.env.GIT_TIMEOUT_MS ?? 120_000)));
+    {GIT_TERMINAL_PROMPT:"0",GCM_INTERACTIVE:"Never"},timeoutMs);
 }
 function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.ProcessEnv> = {}, timeoutMs=Math.max(60_000,Number(process.env.COMMAND_TIMEOUT_MS ?? 10*60*1000))) {
   return new Promise<string>((resolve, reject) => {
@@ -500,7 +504,12 @@ async function processJob(job:Job) {
     if (!await validateRepo(job.full_name, Number(job.github_repo_id))) throw new Error("REPOSITORY_NOT_AUTHORIZED");
     const branch=`lionworkforce/chamado-${job.ticket_id}`;
     await event(job,"repository.cloning",`Clonando ${job.full_name}`);
-    await git(["clone","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],root);
+    const cloneTimeoutMs=Math.max(120_000,Number(process.env.GIT_CLONE_TIMEOUT_MS ?? 10*60_000));
+    await git(
+      ["clone","--depth","1","--branch",safe(job.default_branch),"--single-branch",safe(job.clone_url),repo],
+      root,
+      cloneTimeoutMs,
+    );
     const base=(await git(["rev-parse","HEAD"],repo)).trim();
     await git(["checkout","-b",branch],repo);
     await git(["config","user.name",process.env.GIT_AUTHOR_NAME?.trim() || "LionWorkForce Bot"],repo);
