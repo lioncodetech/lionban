@@ -46,7 +46,7 @@ export async function PATCH(request:Request) {
     return NextResponse.json({error:"Estado de pausa inválido"},{status:400});
   }
   const result=await query<{queue_paused:boolean}>(
-    "UPDATE lwf_worker_control SET queue_paused=$1,pause_reason=CASE WHEN $1 THEN 'manual' ELSE NULL END,deploy_ticket_id=NULL,updated_at=now() WHERE singleton=true RETURNING queue_paused",
+    "UPDATE lwf_worker_control SET queue_paused=$1::boolean,pause_reason=CASE WHEN $1::boolean THEN 'manual' ELSE NULL END,deploy_ticket_id=NULL,updated_at=now() WHERE singleton=true RETURNING queue_paused",
     [body.paused],
   );
   if (!result.rowCount) {

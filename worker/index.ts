@@ -169,7 +169,9 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
   });
 }
 async function event(job:Job, kind:string, message:string, metadata={}) {
-  const result=await db.query<{id:number}>("INSERT INTO lwf_events(ticket_id,execution_id,kind,message,metadata) VALUES($1,$2,$3,$4,$5) RETURNING id", [job.ticket_id,job.execution_id,kind,message,metadata]);
+  const result=await db.query<{id:number}>(`INSERT INTO lwf_events(ticket_id,execution_id,kind,message,metadata)
+    VALUES($1::bigint,$2::uuid,$3::text,$4::text,$5::jsonb) RETURNING id`,
+    [job.ticket_id,job.execution_id,kind,message,JSON.stringify(metadata)]);
   return result.rows[0].id;
 }
 async function savePatch(job:Job, repo:string, committed=false) {
