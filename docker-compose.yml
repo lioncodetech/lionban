@@ -15,10 +15,9 @@ services:
   worker:
     build: { context: ., dockerfile: Dockerfile.worker }
     env_file: .env
-    volumes: [codex_auth:/root/.codex]
+    volumes: [codex_auth:/home/node/.codex]
     depends_on: { postgres: { condition: service_healthy } }
     restart: unless-stopped
 volumes:
   postgres_data:
   codex_auth:
-

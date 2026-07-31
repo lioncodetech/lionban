@@ -5,16 +5,17 @@ import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
 import { defaultBranchContainsCommit, getPullRequestStatus, validateRepo } from "../src/lib/github";
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
+import { assertSafeOutboundUrl } from "../src/lib/outbound-url";
 
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const maximumCapturedOutput=1_000_000;
 const appendOutput=(current:string,next:string)=>(current+next).slice(-maximumCapturedOutput);
 const safe = (value:string) => value.replace(/[^\w./:@-]/g, "");
-const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "danger-full-access";
+const configuredCodexSandbox = process.env.CODEX_SANDBOX_MODE ?? "workspace-write";
 const codexSandboxMode = ["read-only","workspace-write","danger-full-access"].includes(configuredCodexSandbox)
   ? configuredCodexSandbox
-  : "danger-full-access";
+  : "workspace-write";
 function codexEnvironment():NodeJS.ProcessEnv {
   const allowed = [
     "PATH","HOME","USERPROFILE","CODEX_HOME","APPDATA","LOCALAPPDATA",
@@ -190,7 +191,8 @@ async function createPullRequest(job:Job, branch:string) {
 }
 const wait=(milliseconds:number)=>new Promise(resolve=>setTimeout(resolve,milliseconds));
 async function readDeployedCommit(url:string) {
-  const response=await fetch(url,{headers:{accept:"application/json"},signal:AbortSignal.timeout(15000),cache:"no-store"});
+  const safeUrl=await assertSafeOutboundUrl(url,"verification");
+  const response=await fetch(safeUrl,{headers:{accept:"application/json"},signal:AbortSignal.timeout(15000),cache:"no-store",redirect:"error"});
   if (!response.ok) return null;
   const header=response.headers.get("x-commit-sha") ?? response.headers.get("x-version-commit");
   if (header) return header.trim();
@@ -207,7 +209,8 @@ async function triggerDeploy(job:Job, expectedCommit:string) {
   const ownsPause=Boolean(pause.rowCount);
   await event(job,"deploy.started","Deploy solicitado ao EasyPanel; aguardando confirmação de conclusão");
   try {
-    const response=await fetch(job.deploy_webhook_url,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name})});
+    const deployUrl=await assertSafeOutboundUrl(job.deploy_webhook_url,"deploy");
+    const response=await fetch(deployUrl,{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({ticketId:job.ticket_id,repository:job.full_name}),signal:AbortSignal.timeout(15_000),redirect:"error"});
     if (!response.ok) throw new Error(`DEPLOY_WEBHOOK_FAILED_${response.status}`);
     await event(job,"deploy.triggered","EasyPanel aceitou a solicitação de deploy");
     if (!job.deploy_verification_url) {

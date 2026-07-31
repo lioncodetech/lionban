@@ -1,16 +1,21 @@
 FROM node:24-bookworm-slim
 ARG RTK_VERSION=v0.42.4
+ARG RTK_INSTALL_SHA256=d6eb73a772903e13ff34ee1be8a8b24e896ba9a978f20d2279a08b4083ea6f77
+ARG CODEX_VERSION=0.146.0
 RUN apt-get update \
   && apt-get install -y --no-install-recommends git curl ca-certificates \
   && curl -fsSL "https://raw.githubusercontent.com/rtk-ai/rtk/${RTK_VERSION}/install.sh" -o /tmp/install-rtk.sh \
+  && echo "${RTK_INSTALL_SHA256}  /tmp/install-rtk.sh" | sha256sum -c - \
   && RTK_INSTALL_DIR=/usr/local/bin RTK_VERSION="${RTK_VERSION}" sh /tmp/install-rtk.sh \
   && rtk --version \
   && rtk gain \
-  && npm install -g @openai/codex \
+  && npm install -g "@openai/codex@${CODEX_VERSION}" \
   && rm -f /tmp/install-rtk.sh \
   && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+RUN mkdir -p /home/node/.codex && chown -R node:node /app /home/node/.codex
+USER node
 CMD ["sh","-c","npm run migrate && npm run worker"]

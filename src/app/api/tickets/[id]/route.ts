@@ -164,6 +164,15 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   const ticket = await transaction(async client => {
     const current = await client.query<{ status: string }>("SELECT status FROM lwf_tickets WHERE id=$1 FOR UPDATE", [ticketId]);
     if (!current.rowCount) return null;
+    const active=await client.query<{state:string}>(
+      "SELECT state FROM lwf_executions WHERE ticket_id=$1 AND state IN ('queued','running','waiting_approval') ORDER BY attempt DESC LIMIT 1 FOR UPDATE",
+      [ticketId],
+    );
+    if (active.rows[0]?.state==="running" || active.rows[0]?.state==="waiting_approval") return "ACTIVE";
+    if (!["open","completed","failed"].includes(parsed.data.status)) return "EXECUTOR_OWNED";
+    if (active.rows[0]?.state==="queued" && parsed.data.status!=="open") {
+      await client.query("UPDATE lwf_executions SET state='cancelled',finished_at=now() WHERE ticket_id=$1 AND state='queued'",[ticketId]);
+    }
     const updated = await client.query(
       "UPDATE lwf_tickets SET status=$1,updated_at=now() WHERE id=$2 RETURNING *",
       [parsed.data.status, ticketId],
@@ -174,6 +183,8 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
     );
     return updated.rows[0];
   });
+  if (ticket==="ACTIVE") return NextResponse.json({error:"A execução está ativa; cancele-a antes de mover o chamado."},{status:409});
+  if (ticket==="EXECUTOR_OWNED") return NextResponse.json({error:"As etapas internas são controladas pelo executor."},{status:409});
   return ticket ? NextResponse.json(ticket) : NextResponse.json({ error:"Chamado não encontrado" }, { status:404 });
 }
 
