@@ -32,6 +32,13 @@ type RepoAction = { id:number; name:string; display_title:string; status:string;
 type CodexTranscriptItem = { at:string; type:string; text:string };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
+const codexModels=[
+  {value:"",label:"Padrão da conta Codex"},
+  {value:"gpt-5.6-sol",label:"GPT-5.6 Sol — mais detalhado"},
+  {value:"gpt-5.6-terra",label:"GPT-5.6 Terra — uso geral"},
+  {value:"gpt-5.6-luna",label:"GPT-5.6 Luna — tarefas objetivas"},
+  {value:"gpt-5.6",label:"GPT-5.6 — seleção padrão da versão"},
+] as const;
 const statusFromApi: Record<string, Status> = { open:"Aberto", analyzing:"Analisando", fixing:"Corrigindo", testing:"Testando", approval:"Aguardando aprovação", completed:"Concluído", failed:"Falhou", cancelled:"Falhou" };
 const priorityFromApi: Record<string, Ticket["priority"]> = { low:"Baixa", medium:"Média", high:"Alta", critical:"Crítica" };
 const priorityToApi: Record<Ticket["priority"], string> = { Baixa:"low", Média:"medium", Alta:"high", Crítica:"critical" };
@@ -621,7 +628,7 @@ export default function Home() {
       <label>Título <b>*</b><input value={title} onChange={e => setTitle(e.target.value)} placeholder="Ex.: Login falha depois de redefinir a senha" /></label>
       <label>Descrição do bug <b>*</b><textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Explique o comportamento atual, o esperado e como reproduzir..." /></label>
       <div className="row ticket-fields"><label>Criticidade<select value={priority} onChange={e => setPriority(e.target.value as Ticket["priority"])}><option>Baixa</option><option>Média</option><option>Alta</option><option>Crítica</option></select></label><label>Ordem da fila<select value={queuePriority} onChange={e=>setQueuePriority(Number(e.target.value))}>{Array.from({length:10},(_,index)=>index+1).map(value=><option key={value} value={value}>{value} — {value===1?"primeiro":value===10?"último":"prioridade da fila"}</option>)}</select></label><div className="drop" role="button" tabIndex={0} onClick={() => fileInput.current?.click()} onKeyDown={e => { if (e.key === "Enter" || e.key === " ") fileInput.current?.click(); }} onDragOver={e => e.preventDefault()} onDrop={dropImages}>⌁ <span>Logs e imagens<small>Clique, arraste ou cole com Ctrl+V</small></span><input ref={fileInput} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={e => addImages(Array.from(e.target.files ?? []))} /></div></div>
-      <label>Modelo de IA<input value={aiModel} onChange={e=>setAiModel(e.target.value)} placeholder="Padrão da conta Codex" pattern="[A-Za-z0-9._:-]+" maxLength={100} /><small>Deixe vazio para usar o modelo padrão da sua conta ou informe o identificador de um modelo disponível no seu plano.</small></label>
+      <label>Modelo de IA<select value={aiModel} onChange={e=>setAiModel(e.target.value)}>{codexModels.map(model=><option key={model.value||"default"} value={model.value}>{model.label}</option>)}</select><small>A disponibilidade depende do seu plano e da conta autenticada no Codex.</small></label>
       <p className={`severity-help severity-${priority}`}>{priority==="Alta"||priority==="Crítica"?"Esta criticidade exige sua aprovação antes de commit, push ou merge.":"Esta criticidade continua automaticamente após a correção; Pull Request ainda exige autorização no GitHub."}</p>
       <fieldset className="automation-options"><legend>Automação após corrigir e testar</legend>
         <label><input type="checkbox" checked={autoCommit} onChange={e => { setAutoCommit(e.target.checked); if (!e.target.checked) { setAutoPush(false); setAutoPullRequest(false); setAutoDeploy(false); } }} /><span><strong>Commit automático</strong><small>Criar um commit com a correção</small></span></label>

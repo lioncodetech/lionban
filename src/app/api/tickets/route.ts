@@ -9,7 +9,7 @@ const ticketInput = z.object({
   description: z.string().trim().min(10).max(20000),
   priority: z.enum(["low","medium","high","critical"]).default("medium"),
   queuePriority: z.number().int().min(1).max(10).default(5),
-  aiModel: z.string().trim().max(100).regex(/^[A-Za-z0-9._:-]+$/).nullable().default(null),
+  aiModel: z.enum(["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"]).nullable().default(null),
   autoCommit: z.boolean().default(true),
   autoPush: z.boolean().default(true),
   autoPullRequest: z.boolean().default(false),

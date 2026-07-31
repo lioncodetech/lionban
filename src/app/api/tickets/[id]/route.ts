@@ -18,7 +18,7 @@ const editInput=z.object({
   description:z.string().trim().min(10).max(20000),
   priority:z.enum(["low","medium","high","critical"]),
   queuePriority:z.number().int().min(1).max(10),
-  aiModel:z.string().trim().max(100).regex(/^[A-Za-z0-9._:-]+$/).nullable(),
+  aiModel:z.enum(["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"]).nullable(),
   autoCommit:z.boolean(),
   autoPush:z.boolean(),
   autoPullRequest:z.boolean(),
