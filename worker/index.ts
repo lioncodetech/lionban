@@ -241,8 +241,16 @@ async function triggerDeploy(job:Job, expectedCommit:string) {
     }
     throw new Error("DEPLOY_VERIFICATION_TIMEOUT");
   } catch(error) {
+    const errorMessage=error instanceof Error?error.message:String(error);
     await db.query("UPDATE lwf_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
-    await event(job,"deploy.failed","Não foi possível confirmar a conclusão do deploy",{error:error instanceof Error?error.message:String(error)});
+    if (ownsPause) {
+      await db.query(`UPDATE lwf_worker_control SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
+        WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[job.ticket_id]);
+    }
+    const publicMessage=errorMessage==="OUTBOUND_URL_NOT_ALLOWED"
+      ?"O host do webhook ou da verificação não está autorizado em DEPLOY_ALLOWED_HOSTS no worker"
+      :"Não foi possível confirmar a conclusão do deploy";
+    await event(job,"deploy.failed",publicMessage,{error:errorMessage});
     throw error;
   }
 }
