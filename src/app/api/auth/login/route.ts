@@ -1,7 +1,12 @@
 import { NextResponse } from "next/server";
-import { createSession, verifyLogin } from "@/lib/auth";
+import { authConfigurationError,createSession,verifyLogin } from "@/lib/auth";
 import { clearLoginRateLimit,loginRateLimit } from "@/lib/login-rate-limit";
 export async function POST(request: Request) {
+  const configurationError=authConfigurationError();
+  if (configurationError) {
+    console.error(`Login indisponível: ${configurationError}`);
+    return NextResponse.json({error:"Login não configurado no servidor."},{status:503});
+  }
   const forwarded=request.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
   const clientKey=forwarded || request.headers.get("x-real-ip") || "unknown";
   const limit=loginRateLimit(clientKey);

@@ -15,9 +15,9 @@ const secret = () => {
 };
 export async function verifyLogin(username: string, password: string) {
   if (authConfigurationError()) return false;
-  const hash = process.env.ADMIN_PASSWORD_HASH;
-  const configuredUsername = process.env.ADMIN_USERNAME!.trim();
-  return Boolean(hash && username === configuredUsername && await compare(password, hash));
+  const hash = process.env.ADMIN_PASSWORD_HASH?.trim();
+  const configuredUsername = process.env.ADMIN_USERNAME!.trim().toLocaleLowerCase();
+  return Boolean(hash && username.trim().toLocaleLowerCase() === configuredUsername && await compare(password, hash));
 }
 export async function createSession(username: string) {
   return new SignJWT({ role: "admin", username })
