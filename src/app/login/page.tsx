@@ -19,6 +19,7 @@ export default function Login() {
     if (response.ok) location.href="/";
     else if (response.status===429) setError("Muitas tentativas. Aguarde alguns minutos.");
     else if (response.status===503) setError("Login não configurado no servidor. Verifique as variáveis do serviço web.");
+    else if (response.status===403) setError("O proxy recusou a origem do login. Atualize o serviço web.");
     else setError("Usuário ou senha incorretos.");
     setLoading(false);
   }
