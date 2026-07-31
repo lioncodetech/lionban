@@ -404,7 +404,7 @@ async function reconcilePublishedWork() {
       await db.query("UPDATE lwf_approvals SET decision='approved',decided_at=now() WHERE ticket_id=$1 AND decision IS NULL",[item.ticket_id]);
       if (pullRequest.mergeCommitSha) {
         const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${item.ticket_id}: ${item.title}\nCommit: ${pullRequest.mergeCommitSha}\nIntegração: Pull Request #${pullRequest.number}`;
-        await db.query(`UPDATE lwf_applications SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1),20000) WHERE id=$2`,[
+        await db.query(`UPDATE lwf_applications SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1::text),20000) WHERE id=$2::uuid`,[
           historyEntry,item.application_id,
         ]);
       }
@@ -492,8 +492,8 @@ async function publishChanges(job:Job, repo:string, branch:string, approvedResum
   const integratedFiles=(await git(["diff-tree","--no-commit-id","--name-only","-r",branch],repo)).split(/\r?\n/).filter(Boolean);
   const historyEntry=`${new Date().toISOString().slice(0,10)} — chamado #${job.ticket_id}: ${job.title}\nCommit: ${mergedCommit}\nArquivos: ${integratedFiles.join(", ") || "não identificados"}`;
   await db.query(`UPDATE lwf_applications
-    SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1),20000)
-    WHERE id=$2`,[historyEntry,job.application_id]);
+    SET technical_history=right(concat_ws(E'\n\n',NULLIF(technical_history,''),$1::text),20000)
+    WHERE id=$2::uuid`,[historyEntry,job.application_id]);
   await event(job,"context.history_updated","Histórico técnico da aplicação atualizado",{commit:mergedCommit,files:integratedFiles});
   if (job.auto_deploy) await triggerDeploy(job,mergedCommit);
   await db.query("UPDATE lwf_tickets SET status='completed',result_summary='Correção testada e integrada automaticamente',updated_at=now() WHERE id=$1",[job.ticket_id]);
