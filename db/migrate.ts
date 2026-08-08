@@ -17,6 +17,7 @@ const shadowCleanupVersion = "012_lwf_shadow_cleanup";
 const deployMonitoringVersion = "013_lwf_deploy_monitoring";
 const applicationContextVersion = "014_lwf_application_context";
 const ticketModelVersion = "015_lwf_ticket_ai_model";
+const scheduledDeployTicketsVersion = "016_lwf_scheduled_deploy_tickets";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -249,6 +250,17 @@ async function migrate() {
       await client.query("BEGIN");
       await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD COLUMN IF NOT EXISTS ai_model text");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [ticketModelVersion]);
+      await client.query("COMMIT");
+    }
+    const scheduledDeployTicketsApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [scheduledDeployTicketsVersion]);
+    if (!scheduledDeployTicketsApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD COLUMN IF NOT EXISTS ticket_kind text NOT NULL DEFAULT 'fix'");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD COLUMN IF NOT EXISTS scheduled_at timestamptz");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets DROP CONSTRAINT IF EXISTS lwf_tickets_ticket_kind_check");
+      await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD CONSTRAINT lwf_tickets_ticket_kind_check CHECK (ticket_kind IN ('fix','deploy'))");
+      await client.query("CREATE INDEX IF NOT EXISTS lwf_scheduled_queue ON lionworkforce.lwf_tickets(scheduled_at) WHERE status='open'");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [scheduledDeployTicketsVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {

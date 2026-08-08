@@ -18,6 +18,8 @@ const editInput=z.object({
   description:z.string().trim().min(10).max(20000),
   priority:z.enum(["low","medium","high","critical"]),
   queuePriority:z.number().int().min(1).max(10),
+  ticketKind:z.enum(["fix","deploy"]),
+  scheduledAt:z.string().datetime().nullable(),
   aiModel:z.enum(["gpt-5.6","gpt-5.6-sol","gpt-5.6-terra","gpt-5.6-luna"]).nullable(),
   autoCommit:z.boolean(),
   autoPush:z.boolean(),
@@ -27,6 +29,9 @@ const editInput=z.object({
   releaseTag:z.string().trim().regex(/^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/).nullable(),
   attachments:z.array(attachmentInput).max(5),
 }).superRefine((value,context)=>{
+  if (value.ticketKind==="deploy" && value.attachments.length) {
+    context.addIssue({code:"custom",path:["attachments"],message:"Chamados somente de deploy não recebem imagens"});
+  }
   if (value.attachments.reduce((total,item)=>total+item.size,0)>25*1024*1024) {
     context.addIssue({code:"custom",path:["attachments"],message:"O total dos anexos não pode ultrapassar 25 MB"});
   }
@@ -57,21 +62,26 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (body.edit===true) {
     const parsed=editInput.safeParse(body);
     if (!parsed.success) return NextResponse.json({error:"Dados de edição inválidos",details:parsed.error.flatten()},{status:400});
-    if (parsed.data.autoPullRequest&&(!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Pull Request exige commit e push"},{status:400});
-    if (parsed.data.autoDeploy&&(!parsed.data.autoCommit||!parsed.data.autoPush||parsed.data.autoPullRequest)) return NextResponse.json({error:"Deploy exige integração direta"},{status:400});
-    if (parsed.data.createTag&&(!parsed.data.releaseTag||parsed.data.autoPullRequest||!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Configuração de tag inválida"},{status:400});
+    const deployOnly=parsed.data.ticketKind==="deploy";
+    if (!deployOnly&&parsed.data.autoPullRequest&&(!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Pull Request exige commit e push"},{status:400});
+    if (!deployOnly&&parsed.data.autoDeploy&&(!parsed.data.autoCommit||!parsed.data.autoPush||parsed.data.autoPullRequest)) return NextResponse.json({error:"Deploy exige integração direta"},{status:400});
+    if (!deployOnly&&parsed.data.createTag&&(!parsed.data.releaseTag||parsed.data.autoPullRequest||!parsed.data.autoCommit||!parsed.data.autoPush)) return NextResponse.json({error:"Configuração de tag inválida"},{status:400});
     const edited=await transaction(async client=>{
       const execution=await client.query("SELECT id FROM lwf_executions WHERE ticket_id=$1 AND state='queued' ORDER BY attempt DESC LIMIT 1 FOR UPDATE",[ticketId]);
       if (!execution.rowCount) return "NOT_OPEN";
-      const current=await client.query("SELECT id FROM lwf_tickets WHERE id=$1 AND status='open' FOR UPDATE",[ticketId]);
+      const current=await client.query<{id:number;application_id:string}>("SELECT id,application_id FROM lwf_tickets WHERE id=$1 AND status='open' FOR UPDATE",[ticketId]);
       if (!current.rowCount) return "NOT_OPEN";
-      const updated=await client.query(`UPDATE lwf_tickets SET title=$1,description=$2,priority=$3,queue_priority=$4,ai_model=$5,
-        auto_commit=$6,auto_push=$7,auto_pull_request=$8,auto_deploy=$9,create_tag=$10,release_tag=$11,updated_at=now()
-        WHERE id=$12 RETURNING *`,[
+      if (deployOnly) {
+        const application=await client.query("SELECT 1 FROM lwf_applications WHERE id=$1 AND deploy_webhook_url IS NOT NULL",[current.rows[0].application_id]);
+        if (!application.rowCount) return "DEPLOY_NOT_CONFIGURED";
+      }
+      const updated=await client.query(`UPDATE lwf_tickets SET title=$1,description=$2,priority=$3,queue_priority=$4,ticket_kind=$5,scheduled_at=$6,ai_model=$7,
+        auto_commit=$8,auto_push=$9,auto_pull_request=$10,auto_deploy=$11,create_tag=$12,release_tag=$13,updated_at=now()
+        WHERE id=$14 RETURNING *`,[
         parsed.data.title,parsed.data.description,parsed.data.priority,parsed.data.queuePriority,
-        parsed.data.aiModel,
-        parsed.data.autoCommit,parsed.data.autoPush,parsed.data.autoPullRequest,parsed.data.autoDeploy,
-        parsed.data.createTag,parsed.data.releaseTag,ticketId,
+        parsed.data.ticketKind,parsed.data.scheduledAt,deployOnly?null:parsed.data.aiModel,
+        deployOnly?false:parsed.data.autoCommit,deployOnly?false:parsed.data.autoPush,deployOnly?false:parsed.data.autoPullRequest,deployOnly?true:parsed.data.autoDeploy,
+        deployOnly?false:parsed.data.createTag,deployOnly?null:parsed.data.releaseTag,ticketId,
       ]);
       await client.query("DELETE FROM lwf_artifacts WHERE ticket_id=$1 AND kind='screenshot'",[ticketId]);
       for (const attachment of parsed.data.attachments) {
@@ -86,13 +96,13 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
       await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'ticket.edited','Chamado editado enquanto aguardava na fila')",[ticketId]);
       return updated.rows[0];
     });
-    return edited==="NOT_OPEN"
-      ? NextResponse.json({error:"O chamado já saiu da fila e não pode mais ser editado."},{status:409})
-      : NextResponse.json(edited);
+    if (edited==="NOT_OPEN") return NextResponse.json({error:"O chamado já saiu da fila e não pode mais ser editado."},{status:409});
+    if (edited==="DEPLOY_NOT_CONFIGURED") return NextResponse.json({error:"Configure o webhook de deploy desta aplicação."},{status:409});
+    return NextResponse.json(edited);
   }
   if (body.deployCompleted === true) {
     const result=await transaction(async client=>{
-      const updated=await client.query(`UPDATE lwf_tickets SET deploy_status='completed',deploy_updated_at=now(),updated_at=now()
+      const updated=await client.query(`UPDATE lwf_tickets SET deploy_status='completed',status=CASE WHEN ticket_kind='deploy' THEN 'completed'::lwf_ticket_status ELSE status END,deploy_updated_at=now(),updated_at=now()
         WHERE id=$1 AND deploy_status='in_progress' RETURNING id`,[ticketId]);
       if (updated.rowCount) {
         await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'deploy.completed','Deploy confirmado como concluído pelo usuário')",[ticketId]);
@@ -203,9 +213,9 @@ export async function POST(request:Request, context:{params:Promise<{id:string}>
       if (!source.rowCount) return null;
       const ticket=source.rows[0];
       const created=await client.query(`INSERT INTO lwf_tickets(
-        application_id,title,description,priority,queue_priority,ai_model,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
-      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,[
-        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.queue_priority,ticket.ai_model,ticket.auto_commit,ticket.auto_push,
+        application_id,title,description,priority,queue_priority,ticket_kind,ai_model,auto_commit,auto_push,auto_pull_request,auto_deploy,create_tag,release_tag
+      ) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) RETURNING *`,[
+        ticket.application_id,`${ticket.title} (cópia)`,ticket.description,ticket.priority,ticket.queue_priority,ticket.ticket_kind,ticket.ai_model,ticket.auto_commit,ticket.auto_push,
         ticket.auto_pull_request,ticket.auto_deploy,ticket.create_tag,ticket.release_tag,
       ]);
       await client.query("INSERT INTO lwf_executions(ticket_id,application_id) VALUES($1,$2)",[created.rows[0].id,ticket.application_id]);

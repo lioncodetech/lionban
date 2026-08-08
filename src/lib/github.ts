@@ -25,6 +25,13 @@ export async function listRecentRepositoryActions(fullName:string) {
   const result=await response.json() as {workflow_runs:RepositoryActionRun[]};
   return result.workflow_runs;
 }
+export async function getDefaultBranchCommit(fullName:string,defaultBranch:string) {
+  const response=await fetch(`${api}/repos/${fullName}/commits/${encodeURIComponent(defaultBranch)}`,{
+    headers:headers(),cache:"no-store",signal:AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
+  return (await response.json() as {sha:string}).sha;
+}
 export type PullRequestStatus={number:number;state:"open"|"closed";merged:boolean;mergeCommitSha:string|null;htmlUrl:string};
 export async function getPullRequestStatus(fullName:string,number:number):Promise<PullRequestStatus> {
   const response=await fetch(`${api}/repos/${fullName}/pulls/${number}`,{

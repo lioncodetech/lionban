@@ -37,6 +37,8 @@ CREATE TABLE lb_tickets (
   priority lb_priority NOT NULL DEFAULT 'medium',
   queue_priority smallint NOT NULL DEFAULT 5 CHECK (queue_priority BETWEEN 1 AND 10),
   ai_model text,
+  ticket_kind text NOT NULL DEFAULT 'fix' CHECK (ticket_kind IN ('fix','deploy')),
+  scheduled_at timestamptz,
   status lb_ticket_status NOT NULL DEFAULT 'open',
   branch_name text,
   base_commit text,

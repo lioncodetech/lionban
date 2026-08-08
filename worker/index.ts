@@ -3,11 +3,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
-import { defaultBranchContainsCommit, getPullRequestStatus, validateRepo } from "../src/lib/github";
+import { defaultBranchContainsCommit, getDefaultBranchCommit, getPullRequestStatus, validateRepo } from "../src/lib/github";
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 import { assertSafeOutboundUrl } from "../src/lib/outbound-url";
 
-type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; ai_model?:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
+type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; ticket_kind:"fix"|"deploy"; ai_model?:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
 const maximumCapturedOutput=1_000_000;
 const appendOutput=(current:string,next:string)=>(current+next).slice(-maximumCapturedOutput);
@@ -346,12 +346,12 @@ async function claim():Promise<Job|null> {
       await client.query("ROLLBACK");
       return null;
     }
-    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,t.ai_model,
+    const result = await client.query<Job>(`SELECT e.id execution_id,e.ticket_id,e.application_id,t.title,t.description,t.priority,t.ticket_kind,t.ai_model,
       a.full_name,a.github_repo_id,a.default_branch,a.clone_url,a.install_command,a.test_command,a.lint_command,a.build_command,a.test_environment,
       a.project_context,a.technical_history,
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
-      WHERE e.state='queued' AND a.enabled=true
+      WHERE e.state='queued' AND a.enabled=true AND (t.scheduled_at IS NULL OR t.scheduled_at<=now())
         AND NOT EXISTS (
           SELECT 1 FROM lwf_executions active
           WHERE active.application_id=e.application_id AND active.state='running'
@@ -513,6 +513,17 @@ async function processJob(job:Job) {
   try {
     await event(job,"repository.validating",`Validando acesso ao repositório ${job.full_name}`);
     if (!await validateRepo(job.full_name, Number(job.github_repo_id))) throw new Error("REPOSITORY_NOT_AUTHORIZED");
+    if (job.ticket_kind==="deploy") {
+      const expectedCommit=await getDefaultBranchCommit(job.full_name,job.default_branch);
+      await event(job,"deploy.only","Chamado exclusivo de deploy iniciado; nenhum código será alterado",{commit:expectedCommit});
+      await triggerDeploy(job,expectedCommit);
+      const deployment=await db.query<{deploy_status:string}>("SELECT deploy_status FROM lwf_tickets WHERE id=$1",[job.ticket_id]);
+      const completed=deployment.rows[0]?.deploy_status==="completed";
+      await db.query("UPDATE lwf_tickets SET status=$2,result_summary=$3,updated_at=now() WHERE id=$1",[job.ticket_id,completed?"completed":"approval",completed?"Deploy concluído sem alteração de código":"Deploy solicitado; aguardando confirmação de conclusão"]);
+      await db.query("UPDATE lwf_executions SET state='completed',finished_at=now() WHERE id=$1",[job.execution_id]);
+      await event(job,completed?"deploy.only_completed":"deploy.verification_required",completed?"Chamado exclusivo de deploy concluído":"Aguardando confirmação do deploy exclusivo");
+      return;
+    }
     const branch=`lionworkforce/chamado-${job.ticket_id}`;
     await event(job,"repository.cloning",`Clonando ${job.full_name}`);
     const cloneTimeoutMs=Math.max(120_000,Number(process.env.GIT_CLONE_TIMEOUT_MS ?? 10*60_000));

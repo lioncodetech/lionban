@@ -6,6 +6,8 @@
 
 Central pessoal para registrar bugs e delegar correções ao Codex, sempre no repositório GitHub escolhido no chamado.
 
+Os chamados podem ser executados assim que chegam à sua fila por repositório ou agendados para uma data e hora futura. O worker ignora o chamado até o horário marcado, sem bloquear outros repositórios ou itens elegíveis da mesma fila. Também existe o tipo **Somente deploy**: ele valida o repositório autorizado, lê o commit atual da branch principal e dispara o webhook da aplicação sem clonar o código, iniciar o Codex, criar commit ou fazer push. Esse tipo exige um webhook de deploy configurado na aplicação.
+
 ## EasyPanel
 
 1. Crie um serviço PostgreSQL e aplique `db/schema.sql`.
