@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -389,6 +389,30 @@ async function recoverInterruptedJobs() {
     if (recovered.rowCount) console.log(`${recovered.rowCount} execução(ões) recuperada(s)`);
   } catch(error) { await client.query("ROLLBACK"); throw error; } finally { client.release(); }
 }
+async function processCleanupRequests() {
+  const request=await db.query<{id:string;application_id:string}>(`UPDATE lwf_cleanup_requests
+    SET status='running' WHERE id=(SELECT id FROM lwf_cleanup_requests WHERE status='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+    RETURNING id,application_id`);
+  if (!request.rowCount) return;
+  const item=request.rows[0];
+  try {
+    const tickets=await db.query<{id:number}>(`SELECT id FROM lwf_tickets
+      WHERE application_id=$1 AND status IN ('completed','failed')`,[item.application_id]);
+    const allowed=new Set(tickets.rows.map(ticket=>ticket.id));
+    const entries=await readdir(tmpdir(),{withFileTypes:true});
+    let removed=0;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const match=entry.name.match(/^lionworkforce-(\d+)-[A-Za-z0-9_-]+$/);
+      if (!match || !allowed.has(Number(match[1]))) continue;
+      await rm(path.join(tmpdir(),entry.name),{recursive:true,force:true});
+      removed++;
+    }
+    await db.query("UPDATE lwf_cleanup_requests SET status='completed',removed_directories=$2,finished_at=now() WHERE id=$1",[item.id,removed]);
+  } catch(error) {
+    await db.query("UPDATE lwf_cleanup_requests SET status='failed',error_message=$2,finished_at=now() WHERE id=$1",[item.id,String(error).slice(0,2000)]);
+  }
+}
 async function reconcilePublishedWork() {
   const pullRequests=await db.query<{
     ticket_id:number;execution_id:string;application_id:string;title:string;full_name:string;pull_request_number:number;
@@ -718,6 +742,8 @@ async function main() {
   recoveryTimer.unref();
   const reconciliationTimer=setInterval(()=>reconcilePublishedWork().catch(error=>console.error("reconciliation:",error)),30*1000);
   reconciliationTimer.unref();
+  const cleanupTimer=setInterval(()=>processCleanupRequests().catch(error=>console.error("cleanup:",error)),10*1000);
+  cleanupTimer.unref();
   const configuredConcurrency=Number(process.env.WORKER_MAX_CONCURRENCY ?? 2);
   const maxConcurrency=Number.isInteger(configuredConcurrency)&&configuredConcurrency>0
     ? Math.min(configuredConcurrency,10)

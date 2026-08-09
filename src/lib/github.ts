@@ -32,6 +32,22 @@ export async function getDefaultBranchCommit(fullName:string,defaultBranch:strin
   if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
   return (await response.json() as {sha:string}).sha;
 }
+export async function listLionWorkForceBranches(fullName:string) {
+  const response=await fetch(`${api}/repos/${fullName}/git/matching-refs/heads/lionworkforce%2Fchamado-`,{
+    headers:headers(),cache:"no-store",signal:AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new Error(`GitHub respondeu ${response.status}`);
+  const refs=await response.json() as Array<{ref:string}>;
+  return refs.map(item=>item.ref.replace(/^refs\/heads\//,""));
+}
+export async function deleteRepositoryBranch(fullName:string,branch:string) {
+  if (!/^lionworkforce\/chamado-\d+$/.test(branch)) throw new Error("BRANCH_NOT_ALLOWED");
+  const ref=branch.split("/").map(encodeURIComponent).join("/");
+  const response=await fetch(`${api}/repos/${fullName}/git/refs/heads/${ref}`,{
+    method:"DELETE",headers:headers(),cache:"no-store",signal:AbortSignal.timeout(15_000),
+  });
+  if (!response.ok && response.status!==404) throw new Error(`GitHub respondeu ${response.status}`);
+}
 export type PullRequestStatus={number:number;state:"open"|"closed";merged:boolean;mergeCommitSha:string|null;htmlUrl:string};
 export async function getPullRequestStatus(fullName:string,number:number):Promise<PullRequestStatus> {
   const response=await fetch(`${api}/repos/${fullName}/pulls/${number}`,{

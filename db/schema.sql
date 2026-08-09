@@ -116,6 +116,15 @@ CREATE TABLE lb_worker_control (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO lb_worker_control(singleton) VALUES(true);
+CREATE TABLE lb_cleanup_requests (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  application_id uuid NOT NULL REFERENCES lb_applications(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','completed','failed')),
+  removed_directories integer NOT NULL DEFAULT 0,
+  error_message text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
 CREATE TABLE lb_settings (
   singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
   archive_after_days smallint NOT NULL DEFAULT 7 CHECK (archive_after_days BETWEEN 1 AND 3650),

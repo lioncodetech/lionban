@@ -125,6 +125,7 @@ export default function Home() {
   const [buildCommand, setBuildCommand] = useState("");
   const [testEnvironmentText,setTestEnvironmentText]=useState("");
   const [configSaving,setConfigSaving]=useState(false);
+  const [cleaningBranches,setCleaningBranches]=useState(false);
   const [configMessage,setConfigMessage]=useState("");
   const [archiveAfterDays,setArchiveAfterDays]=useState(7);
   const [deleteAfterDays,setDeleteAfterDays]=useState(15);
@@ -562,6 +563,19 @@ export default function Home() {
     setConfigMessage(`Configuração salva${result.test_database_schema?` — schema ${result.test_database_schema}`:""}.`);
   }
 
+  async function cleanupApplicationBranches() {
+    if (!configApp || !window.confirm(`Limpar branches antigas de ${configApp.name}?\n\nSerão removidas no GitHub somente branches lionworkforce/chamado-ID de chamados concluídos ou falhados. Clones temporários residuais desses chamados também serão apagados no worker.`)) return;
+    setCleaningBranches(true); setConfigMessage("");
+    try {
+      const response=await fetch(`/api/applications/${configApp.id}/cleanup`,{method:"POST"});
+      const result=await response.json().catch(()=>({}));
+      if (!response.ok) { setConfigMessage(result.error??"Não foi possível iniciar a limpeza."); return; }
+      setConfigMessage(`${result.removedBranches} branch(es) removida(s) do GitHub. A limpeza dos clones residuais foi enviada ao worker.`);
+    } catch {
+      setConfigMessage("Falha de conexão ao iniciar a limpeza.");
+    } finally { setCleaningBranches(false); }
+  }
+
   async function saveSettings(e:FormEvent) {
     e.preventDefault();
     const response=await fetch("/api/settings",{method:"PATCH",headers:{"content-type":"application/json"},body:JSON.stringify({archiveAfterDays,deleteAfterDays})});
@@ -679,10 +693,11 @@ export default function Home() {
       </section>
       {configApp.technicalHistory&&<details className="project-history"><summary>Ver histórico técnico integrado</summary><pre>{configApp.technicalHistory}</pre><small>Atualizado automaticamente somente depois que uma correção é integrada à branch principal.</small></details>}
       <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>{setTestEnvironmentText(e.target.value);setConfigMessage("");}} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}${configApp.testDatabaseSchema?` — schema atual: ${configApp.testDatabaseSchema}`:" — nenhum parâmetro schema detectado"}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
-      {configMessage&&<div className={configMessage.startsWith("Configuração salva")?"config-success":"import-error"}>{configMessage}</div>}
+      {configMessage&&<div className={configMessage.startsWith("Configuração salva")||configMessage.includes("branch(es) removida(s)")?"config-success":"import-error"}>{configMessage}</div>}
       <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
       <label>URL HTTPS de verificação da versão<input type="url" value={deployVerificationUrl} onChange={e=>setDeployVerificationUrl(e.target.value)} placeholder={configApp.deployVerificationConfigured?"Já configurada — cole outra para substituir":"https://seu-app.com/api/version"} /><small>Deve retornar JSON com commit/sha ou o cabeçalho X-Commit-Sha. É usada para confirmar o deploy e liberar a fila.</small></label>
       <label>Tempo limite do deploy (minutos)<input type="number" min={1} max={120} value={deployTimeoutMinutes} onChange={e=>setDeployTimeoutMinutes(Number(e.target.value))} /></label>
+      <section className="branch-cleanup"><div><strong>Limpeza de branches e clones</strong><small>Remove somente branches <code>lionworkforce/chamado-ID</code> de chamados encerrados e clones temporários residuais na VPS. Chamados ativos e a branch principal são preservados.</small></div><button type="button" className="danger" disabled={cleaningBranches} onClick={cleanupApplicationBranches}>{cleaningBranches?"Limpando...":"Limpar agora"}</button></section>
       <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Fechar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setRemoveDeployWebhook(value=>!value)}>{removeDeployWebhook?"Manter webhook":"Remover webhook"}</button>}<button className="primary" disabled={configSaving}>{configSaving?"Salvando...":"Salvar"}</button></footer>
     </form></div>}
 

@@ -18,6 +18,7 @@ const deployMonitoringVersion = "013_lwf_deploy_monitoring";
 const applicationContextVersion = "014_lwf_application_context";
 const ticketModelVersion = "015_lwf_ticket_ai_model";
 const scheduledDeployTicketsVersion = "016_lwf_scheduled_deploy_tickets";
+const cleanupRequestsVersion = "017_lwf_cleanup_requests";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -140,6 +141,7 @@ async function migrate() {
       await client.query("ALTER TABLE lb_artifacts RENAME TO lwf_artifacts");
       await client.query("ALTER TABLE lb_worker_heartbeats RENAME TO lwf_worker_heartbeats");
       await client.query("ALTER TABLE lb_worker_control RENAME TO lwf_worker_control");
+      await client.query("ALTER TABLE IF EXISTS lb_cleanup_requests RENAME TO lwf_cleanup_requests");
       await client.query("ALTER TABLE lb_settings RENAME TO lwf_settings");
       await client.query("ALTER INDEX IF EXISTS lb_one_active_execution_per_app RENAME TO lwf_one_active_execution_per_app");
       await client.query("ALTER SEQUENCE IF EXISTS lb_tickets_id_seq RENAME TO lwf_tickets_id_seq");
@@ -173,6 +175,7 @@ async function migrate() {
       await client.query("CREATE VIEW lb_artifacts AS SELECT * FROM lwf_artifacts");
       await client.query("CREATE VIEW lb_worker_heartbeats AS SELECT * FROM lwf_worker_heartbeats");
       await client.query("CREATE VIEW lb_worker_control AS SELECT * FROM lwf_worker_control");
+      await client.query("CREATE VIEW lb_cleanup_requests AS SELECT * FROM lwf_cleanup_requests");
       await client.query("CREATE VIEW lb_settings AS SELECT * FROM lwf_settings");
       await client.query("COMMIT");
     }
@@ -184,7 +187,7 @@ async function migrate() {
       for (const table of [
         "lwf_repository_connections","lwf_applications","lwf_tickets","lwf_executions",
         "lwf_events","lwf_approvals","lwf_artifacts","lwf_worker_heartbeats",
-        "lwf_worker_control","lwf_settings","lwf_migrations",
+        "lwf_worker_control","lwf_cleanup_requests","lwf_settings","lwf_migrations",
       ]) {
         await client.query(`ALTER TABLE IF EXISTS public.${table} SET SCHEMA lionworkforce`);
       }
@@ -261,6 +264,22 @@ async function migrate() {
       await client.query("ALTER TABLE lionworkforce.lwf_tickets ADD CONSTRAINT lwf_tickets_ticket_kind_check CHECK (ticket_kind IN ('fix','deploy'))");
       await client.query("CREATE INDEX IF NOT EXISTS lwf_scheduled_queue ON lionworkforce.lwf_tickets(scheduled_at) WHERE status='open'");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [scheduledDeployTicketsVersion]);
+      await client.query("COMMIT");
+    }
+    const cleanupRequestsApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [cleanupRequestsVersion]);
+    if (!cleanupRequestsApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query(`CREATE TABLE IF NOT EXISTS lionworkforce.lwf_cleanup_requests (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        application_id uuid NOT NULL REFERENCES lionworkforce.lwf_applications(id) ON DELETE CASCADE,
+        status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','completed','failed')),
+        removed_directories integer NOT NULL DEFAULT 0,
+        error_message text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        finished_at timestamptz
+      )`);
+      await client.query("CREATE INDEX IF NOT EXISTS lwf_cleanup_requests_pending ON lionworkforce.lwf_cleanup_requests(created_at) WHERE status='pending'");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [cleanupRequestsVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {
