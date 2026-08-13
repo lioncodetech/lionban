@@ -7,7 +7,7 @@
 - Requisições mutáveis exigem origem compatível e corpos HTTP têm limite.
 - Anexos têm limites, tipos permitidos e validação da assinatura binária.
 - Saídas, transcrições, listas, concorrência e tempos de execução são limitados.
-- O subprocesso do Codex recebe apenas variáveis operacionais permitidas e as variáveis de teste daquela aplicação. Token GitHub, banco do LionWorkForce e webhooks não são repassados.
+- O subprocesso do Codex recebe apenas variáveis operacionais permitidas. Token GitHub, banco do LionWorkForce, webhooks e variáveis exclusivas de teste não são repassados; estas últimas são usadas somente pelos comandos de validação controlados pelo worker.
 - O Codex usa `workspace-write` por padrão.
 - URLs de deploy bloqueiam destinos privados e podem ser limitadas por `DEPLOY_ALLOWED_HOSTS`.
 - Pull Requests e pushes na branch principal são reconciliados com o GitHub depois de reinícios.
