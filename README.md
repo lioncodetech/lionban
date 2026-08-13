@@ -8,7 +8,7 @@ Central pessoal para registrar bugs e delegar correções ao Codex, sempre no re
 
 Os chamados podem ser executados assim que chegam à sua fila por repositório ou agendados para uma data e hora futura. O worker ignora o chamado até o horário marcado, sem bloquear outros repositórios ou itens elegíveis da mesma fila. Também existe o tipo **Somente deploy**: ele valida o repositório autorizado, lê o commit atual da branch principal e dispara o webhook da aplicação sem clonar o código, iniciar o Codex, criar commit ou fazer push. Esse tipo exige um webhook de deploy configurado na aplicação.
 
-Em **Aplicações → Configurar → Limpeza de branches e clones**, é possível remover branches `lionworkforce/chamado-ID` pertencentes a chamados concluídos ou falhados. A mesma ação solicita ao worker a remoção de diretórios temporários residuais desses chamados na VPS. Chamados em aberto ou execução, branches fora desse padrão e a branch principal nunca entram na limpeza. Em condições normais, cada clone já é removido automaticamente ao final da execução.
+Em **Aplicações → Configurar → Limpeza de branches e clones**, é possível solicitar ao worker a remoção de branches `lionworkforce/chamado-ID` pertencentes a chamados concluídos ou falhados e de diretórios temporários residuais desses chamados na VPS. O serviço web apenas enfileira e acompanha a solicitação; chamadas ao GitHub e exclusões de arquivos são executadas assincronamente pelo worker, e o resultado final aparece no formulário. Chamados em aberto ou execução, branches fora desse padrão e a branch principal nunca entram na limpeza. Em condições normais, cada clone já é removido automaticamente ao final da execução.
 
 ## EasyPanel
 

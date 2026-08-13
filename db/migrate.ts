@@ -19,6 +19,7 @@ const applicationContextVersion = "014_lwf_application_context";
 const ticketModelVersion = "015_lwf_ticket_ai_model";
 const scheduledDeployTicketsVersion = "016_lwf_scheduled_deploy_tickets";
 const cleanupRequestsVersion = "017_lwf_cleanup_requests";
+const asynchronousCleanupVersion = "018_lwf_asynchronous_cleanup";
 async function migrate() {
   const client = await db.connect();
   try {
@@ -280,6 +281,14 @@ async function migrate() {
       )`);
       await client.query("CREATE INDEX IF NOT EXISTS lwf_cleanup_requests_pending ON lionworkforce.lwf_cleanup_requests(created_at) WHERE status='pending'");
       await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [cleanupRequestsVersion]);
+      await client.query("COMMIT");
+    }
+    const asynchronousCleanupApplied = await client.query("SELECT 1 FROM public.lb_migrations WHERE version=$1", [asynchronousCleanupVersion]);
+    if (!asynchronousCleanupApplied.rowCount) {
+      await client.query("BEGIN");
+      await client.query("ALTER TABLE lionworkforce.lwf_cleanup_requests ADD COLUMN IF NOT EXISTS removed_branches integer NOT NULL DEFAULT 0");
+      await client.query("ALTER TABLE lionworkforce.lwf_cleanup_requests ADD COLUMN IF NOT EXISTS started_at timestamptz");
+      await client.query("INSERT INTO public.lb_migrations(version) VALUES($1)", [asynchronousCleanupVersion]);
       await client.query("COMMIT");
     }
   } catch (error) {

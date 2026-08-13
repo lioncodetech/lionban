@@ -120,9 +120,11 @@ CREATE TABLE lb_cleanup_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id uuid NOT NULL REFERENCES lb_applications(id) ON DELETE CASCADE,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','running','completed','failed')),
+  removed_branches integer NOT NULL DEFAULT 0,
   removed_directories integer NOT NULL DEFAULT 0,
   error_message text,
   created_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
   finished_at timestamptz
 );
 CREATE TABLE lb_settings (

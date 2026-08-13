@@ -570,9 +570,23 @@ export default function Home() {
       const response=await fetch(`/api/applications/${configApp.id}/cleanup`,{method:"POST"});
       const result=await response.json().catch(()=>({}));
       if (!response.ok) { setConfigMessage(result.error??"Não foi possível iniciar a limpeza."); return; }
-      setConfigMessage(`${result.removedBranches} branch(es) removida(s) do GitHub. A limpeza dos clones residuais foi enviada ao worker.`);
-    } catch {
-      setConfigMessage("Falha de conexão ao iniciar a limpeza.");
+      setConfigMessage(result.reused?"Acompanhando uma limpeza que já estava em andamento...":"Limpeza enviada ao worker. Aguardando o resultado...");
+      for (let attempt=0;attempt<120;attempt++) {
+        await new Promise(resolve=>window.setTimeout(resolve,2000));
+        const statusResponse=await fetch(`/api/applications/${configApp.id}/cleanup?requestId=${encodeURIComponent(result.requestId)}`,{cache:"no-store"});
+        const status=await statusResponse.json().catch(()=>({}));
+        if (!statusResponse.ok) throw new Error(status.error??"Falha ao consultar a limpeza.");
+        if (status.status==="completed") {
+          setConfigMessage(`Limpeza concluída: ${status.removed_branches} branch(es) no GitHub e ${status.removed_directories} clone(s) residual(is) na VPS removidos.`);
+          return;
+        }
+        if (status.status==="failed") throw new Error(status.error_message??"O worker não conseguiu concluir a limpeza.");
+        setConfigMessage(status.status==="running"?"Worker limpando branches e clones...":"Limpeza aguardando o worker...");
+      }
+      throw new Error("A limpeza continua em andamento. Volte a tentar em alguns minutos.");
+    } catch(error) {
+      const message=error instanceof Error?error.message:"Não foi possível concluir ou confirmar a limpeza.";
+      setConfigMessage(`${message} Consulte os logs do worker e tente novamente.`);
     } finally { setCleaningBranches(false); }
   }
 
@@ -693,7 +707,7 @@ export default function Home() {
       </section>
       {configApp.technicalHistory&&<details className="project-history"><summary>Ver histórico técnico integrado</summary><pre>{configApp.technicalHistory}</pre><small>Atualizado automaticamente somente depois que uma correção é integrada à branch principal.</small></details>}
       <label>Variáveis exclusivas do ambiente de teste<textarea value={testEnvironmentText} onChange={e=>{setTestEnvironmentText(e.target.value);setConfigMessage("");}} placeholder={"DATABASE_URL=postgresql://usuario:senha@servidor:5432/base_teste\nE2E_BASE_URL=https://teste.exemplo.com"} /><small>{configApp.testEnvironmentKeys.length?`Já configuradas (valores ocultos): ${configApp.testEnvironmentKeys.join(", ")}${configApp.testDatabaseSchema?` — schema atual: ${configApp.testDatabaseSchema}`:" — nenhum parâmetro schema detectado"}. Deixe vazio para manter; preencha para substituir.`:"Nenhuma variável configurada. Use somente banco e serviços de teste, nunca a base de produção."}</small></label>
-      {configMessage&&<div className={configMessage.startsWith("Configuração salva")||configMessage.includes("branch(es) removida(s)")?"config-success":"import-error"}>{configMessage}</div>}
+      {configMessage&&<div className={configMessage.startsWith("Configuração salva")||configMessage.startsWith("Limpeza concluída")||configMessage.includes("aguardando")||configMessage.includes("limpando")||configMessage.includes("Acompanhando")?"config-success":"import-error"}>{configMessage}</div>}
       <label>Webhook de deploy HTTPS<input type="url" value={deployWebhookUrl} disabled={removeDeployWebhook} onChange={e => setDeployWebhookUrl(e.target.value)} placeholder={removeDeployWebhook ? "O webhook será removido ao salvar" : configApp.deployConfigured ? "Já configurado — cole outro para substituir" : "https://..."} /></label>
       <label>URL HTTPS de verificação da versão<input type="url" value={deployVerificationUrl} onChange={e=>setDeployVerificationUrl(e.target.value)} placeholder={configApp.deployVerificationConfigured?"Já configurada — cole outra para substituir":"https://seu-app.com/api/version"} /><small>Deve retornar JSON com commit/sha ou o cabeçalho X-Commit-Sha. É usada para confirmar o deploy e liberar a fila.</small></label>
       <label>Tempo limite do deploy (minutos)<input type="number" min={1} max={120} value={deployTimeoutMinutes} onChange={e=>setDeployTimeoutMinutes(Number(e.target.value))} /></label>

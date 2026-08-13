@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { db } from "../src/lib/db";
-import { defaultBranchContainsCommit, getDefaultBranchCommit, getPullRequestStatus, validateRepo } from "../src/lib/github";
+import { defaultBranchContainsCommit, deleteRepositoryBranch, getDefaultBranchCommit, getPullRequestStatus, listLionWorkForceBranches, validateRepo } from "../src/lib/github";
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 import { assertSafeOutboundUrl } from "../src/lib/outbound-url";
 
@@ -391,14 +391,21 @@ async function recoverInterruptedJobs() {
 }
 async function processCleanupRequests() {
   const request=await db.query<{id:string;application_id:string}>(`UPDATE lwf_cleanup_requests
-    SET status='running' WHERE id=(SELECT id FROM lwf_cleanup_requests WHERE status='pending' ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
+    SET status='running',started_at=now(),error_message=NULL WHERE id=(SELECT id FROM lwf_cleanup_requests
+      WHERE status='pending' OR (status='running' AND started_at<now()-interval '15 minutes')
+      ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1)
     RETURNING id,application_id`);
   if (!request.rowCount) return;
   const item=request.rows[0];
   try {
+    const application=await db.query<{full_name:string}>("SELECT full_name FROM lwf_applications WHERE id=$1",[item.application_id]);
+    if (!application.rowCount) throw new Error("APPLICATION_NOT_FOUND");
     const tickets=await db.query<{id:number}>(`SELECT id FROM lwf_tickets
       WHERE application_id=$1 AND status IN ('completed','failed')`,[item.application_id]);
     const allowed=new Set(tickets.rows.map(ticket=>ticket.id));
+    const branches=(await listLionWorkForceBranches(application.rows[0].full_name))
+      .filter(branch=>{const match=branch.match(/^lionworkforce\/chamado-(\d+)$/);return Boolean(match&&allowed.has(Number(match[1])));});
+    for (const branch of branches) await deleteRepositoryBranch(application.rows[0].full_name,branch);
     const entries=await readdir(tmpdir(),{withFileTypes:true});
     let removed=0;
     for (const entry of entries) {
@@ -408,7 +415,7 @@ async function processCleanupRequests() {
       await rm(path.join(tmpdir(),entry.name),{recursive:true,force:true});
       removed++;
     }
-    await db.query("UPDATE lwf_cleanup_requests SET status='completed',removed_directories=$2,finished_at=now() WHERE id=$1",[item.id,removed]);
+    await db.query("UPDATE lwf_cleanup_requests SET status='completed',removed_branches=$2,removed_directories=$3,finished_at=now() WHERE id=$1",[item.id,branches.length,removed]);
   } catch(error) {
     await db.query("UPDATE lwf_cleanup_requests SET status='failed',error_message=$2,finished_at=now() WHERE id=$1",[item.id,String(error).slice(0,2000)]);
   }
