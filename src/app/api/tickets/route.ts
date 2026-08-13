@@ -37,15 +37,19 @@ export async function GET(request:Request) {
   const archived=searchParams.get("archived")==="true";
   const requestedLimit=Number(searchParams.get("limit") ?? 250);
   const limit=Number.isInteger(requestedLimit)?Math.min(Math.max(requestedLimit,1),500):250;
+  const updatedAfter=searchParams.get("updatedAfter");
+  const validUpdatedAfter=updatedAfter && !Number.isNaN(Date.parse(updatedAfter)) ? updatedAfter : null;
   const result = await query(`SELECT t.*, a.name application_name, a.full_name repository
     FROM lwf_tickets t JOIN lwf_applications a ON a.id=t.application_id
     WHERE ${archived ? "t.archived_at IS NOT NULL" : "t.archived_at IS NULL"}
-    ORDER BY t.created_at DESC LIMIT $1`,[limit]);
+      AND ($2::timestamptz IS NULL OR t.updated_at > $2::timestamptz)
+    ORDER BY t.created_at DESC LIMIT $1`,[limit,validUpdatedAfter]);
   return NextResponse.json(result.rows);
 }
 export async function POST(request: Request) {
-  const parsed = ticketInput.safeParse(await request.json());
+  const parsed = ticketInput.safeParse(await request.json().catch(()=>null));
   if (!parsed.success) return NextResponse.json({ error: "Dados inválidos", details: parsed.error.flatten() }, { status: 400 });
+  try {
   const ticket = await transaction(async client => {
     const app = await client.query<{id:string;deploy_webhook_url:string|null}>("SELECT id,deploy_webhook_url FROM lwf_applications WHERE id=$1 AND enabled=true FOR SHARE", [parsed.data.applicationId]);
     if (!app.rowCount) throw new Error("APP_NOT_FOUND");
@@ -71,4 +75,20 @@ export async function POST(request: Request) {
     return created.rows[0];
   });
   return NextResponse.json(ticket, { status: 201 });
+  } catch (error) {
+    const code=error instanceof Error?error.message:"UNKNOWN_ERROR";
+    const known:Record<string,{status:number;message:string}>={
+      APP_NOT_FOUND:{status:404,message:"A aplicação não existe ou está desativada."},
+      DEPLOY_WEBHOOK_NOT_CONFIGURED:{status:409,message:"Configure o webhook de deploy da aplicação antes de criar este chamado."},
+      PR_REQUIRES_PUSH:{status:400,message:"Pull Request automático exige commit e push automáticos."},
+      DEPLOY_REQUIRES_DIRECT_MERGE:{status:400,message:"Deploy automático exige commit e push diretos, sem Pull Request."},
+      INVALID_RELEASE_TAG_FLOW:{status:400,message:"A configuração de tag/release é incompatível com este fluxo."},
+      ATTACHMENT_SIZE_MISMATCH:{status:400,message:"O tamanho informado de uma imagem não corresponde ao arquivo."},
+      ATTACHMENT_CONTENT_INVALID:{status:400,message:"Uma das imagens possui conteúdo inválido."},
+    };
+    const mapped=known[code];
+    if (mapped) return NextResponse.json({error:mapped.message,code},{status:mapped.status});
+    console.error("ticket.create:",error);
+    return NextResponse.json({error:"Não foi possível criar o chamado.",code:"TICKET_CREATE_FAILED"},{status:500});
+  }
 }

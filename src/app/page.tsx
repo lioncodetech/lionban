@@ -16,7 +16,7 @@ type Ticket = { id:number; appId:string; title:string; description:string; prior
 type GitHubRepo = { id: number; name: string; full_name: string; default_branch: string; language: string | null; clone_url: string };
 type StoredAttachment = { name:string; mimeType:string; size:number; data:string };
 type PreviewImage = { name:string; src:string };
-type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string };
+type AgentHealth = { workerOnline:boolean; codexAuthenticated:boolean; queuePaused:boolean; lastSeen:string|null; message:string; metrics?:HealthMetrics };
 type TicketEvent = { id:number; kind:string; message:string; metadata:Record<string,unknown>; created_at:string };
 type TicketExecution = { id:string; state:string; attempt:number; started_at:string|null; finished_at:string|null; error_message:string|null };
 type TicketApproval = { id:string; reason:string; decision:string|null; decided_at:string|null; created_at:string; patch_available:boolean };
@@ -31,6 +31,8 @@ type TicketDetails = {
 type RepoTag = { name:string; commit:{sha:string} };
 type RepoAction = { id:number; name:string; display_title:string; status:string; conclusion:string|null; html_url:string; created_at:string };
 type CodexTranscriptItem = { at:string; type:string; text:string };
+type HealthMetrics = { queued:number; running:number; waitingApproval:number; failed24h:number; deployLocks:number };
+type CleanupHistory = { id:string; status:string; removed_branches:number; removed_directories:number; error_message:string|null; created_at:string; finished_at:string|null };
 
 const statuses: Status[] = ["Aberto", "Analisando", "Corrigindo", "Testando", "Aguardando aprovação", "Concluído", "Falhou"];
 const codexModels=[
@@ -83,6 +85,13 @@ const toLocalDateTimeInput=(value:string|null) => {
   const date=new Date(value);
   return new Date(date.getTime()-date.getTimezoneOffset()*60_000).toISOString().slice(0,16);
 };
+const ticketFromRow=(row:Record<string,unknown>):Ticket=>({
+  id:Number(row.id),appId:String(row.application_id),title:String(row.title),description:String(row.description),
+  priority:priorityFromApi[String(row.priority)] ?? "Média",queuePriority:Number(row.queue_priority ?? 5),
+  status:statusFromApi[String(row.status)] ?? "Falhou",ticketKind:row.ticket_kind==="deploy"?"deploy":"fix",
+  scheduledAt:row.scheduled_at?String(row.scheduled_at):null,age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),
+  deployStatus:String(row.deploy_status ?? "not_requested"),
+});
 
 export default function Home() {
   const [tickets, setTickets] = useState<Ticket[]>([]);
@@ -127,6 +136,7 @@ export default function Home() {
   const [configSaving,setConfigSaving]=useState(false);
   const [cleaningBranches,setCleaningBranches]=useState(false);
   const [configMessage,setConfigMessage]=useState("");
+  const [cleanupHistory,setCleanupHistory]=useState<CleanupHistory[]>([]);
   const [archiveAfterDays,setArchiveAfterDays]=useState(7);
   const [deleteAfterDays,setDeleteAfterDays]=useState(15);
   const [ticketDetails, setTicketDetails] = useState<TicketDetails | null>(null);
@@ -159,18 +169,24 @@ export default function Home() {
     let active=true;
     let initialLoad=true;
     let refreshing=false;
+    let lastSync:string|null=null;
+    let refreshCount=0;
     async function loadData() {
       if (refreshing || document.hidden) return;
       refreshing=true;
       try {
-        const [appsResponse, ticketsResponse] = await Promise.all([
-          fetch("/api/applications",{cache:"no-store"}),
-          fetch(view==="archive"?"/api/tickets?archived=true":"/api/tickets",{cache:"no-store"}),
+        const fullRefresh=!lastSync || refreshCount%12===0;
+        const requestStartedAt=new Date().toISOString();
+        const ticketBase=view==="archive"?"/api/tickets?archived=true":"/api/tickets";
+        const ticketUrl=!fullRefresh&&lastSync?`${ticketBase}${ticketBase.includes("?")?"&":"?"}updatedAfter=${encodeURIComponent(lastSync)}`:ticketBase;
+        const [appsResponse,ticketsResponse]=await Promise.all([
+          fullRefresh?fetch("/api/applications",{cache:"no-store"}):Promise.resolve(null),
+          fetch(ticketUrl,{cache:"no-store"}),
         ]);
-        if (!appsResponse.ok || !ticketsResponse.ok) throw new Error("Falha ao carregar os dados");
-        const [appRows, ticketRows] = await Promise.all([appsResponse.json(), ticketsResponse.json()]);
+        if ((appsResponse&&!appsResponse.ok)||!ticketsResponse.ok) throw new Error("Falha ao carregar os dados");
+        const [appRows,ticketRows]=await Promise.all([appsResponse?appsResponse.json():Promise.resolve(null),ticketsResponse.json()]);
         if (!active) return;
-        setApplicationList(appRows.map((row: Record<string, unknown>) => ({
+        if (appRows) setApplicationList(appRows.map((row: Record<string, unknown>) => ({
           id:String(row.id), name:String(row.name), repo:String(row.full_name),
           language:String(row.language ?? "Não detectada"), branch:String(row.default_branch), color:"#236b50", deployConfigured:Boolean(row.deploy_configured),
           deployVerificationConfigured:Boolean(row.deploy_verification_configured),deployTimeoutMinutes:Number(row.deploy_timeout_minutes ?? 20),
@@ -180,12 +196,14 @@ export default function Home() {
           testDatabaseSchema:String(row.test_database_schema ?? ""),
           projectContext:String(row.project_context ?? ""),technicalHistory:String(row.technical_history ?? ""),
         })));
-        setTickets(ticketRows.map((row: Record<string, unknown>) => ({
-          id:Number(row.id), appId:String(row.application_id), title:String(row.title), description:String(row.description),
-          priority:priorityFromApi[String(row.priority)] ?? "Média",queuePriority:Number(row.queue_priority ?? 5),status:statusFromApi[String(row.status)] ?? "Falhou",
-          ticketKind:row.ticket_kind==="deploy"?"deploy":"fix",scheduledAt:row.scheduled_at?String(row.scheduled_at):null,
-          age:new Date(String(row.created_at)).toLocaleDateString("pt-BR"),deployStatus:String(row.deploy_status ?? "not_requested"),
-        })));
+        const mapped=ticketRows.map(ticketFromRow);
+        if (fullRefresh) setTickets(mapped);
+        else setTickets(current=>{
+          const changes=new Map(mapped.map((ticket:Ticket)=>[ticket.id,ticket]));
+          return [...current.map(ticket=>changes.get(ticket.id)??ticket),...mapped.filter((ticket:Ticket)=>!current.some(existing=>existing.id===ticket.id))];
+        });
+        lastSync=requestStartedAt;
+        refreshCount+=1;
         setDataError("");
       } catch {
         if (active && initialLoad) setDataError("Não foi possível carregar os dados do PostgreSQL.");
@@ -196,7 +214,7 @@ export default function Home() {
       }
     }
     loadData();
-    const timer=window.setInterval(loadData,10000);
+    const timer=window.setInterval(loadData,5000);
     return ()=>{ active=false; window.clearInterval(timer); };
   }, [view]);
 
@@ -578,6 +596,7 @@ export default function Home() {
         if (!statusResponse.ok) throw new Error(status.error??"Falha ao consultar a limpeza.");
         if (status.status==="completed") {
           setConfigMessage(`Limpeza concluída: ${status.removed_branches} branch(es) no GitHub e ${status.removed_directories} clone(s) residual(is) na VPS removidos.`);
+          void loadCleanupHistory(configApp.id);
           return;
         }
         if (status.status==="failed") throw new Error(status.error_message??"O worker não conseguiu concluir a limpeza.");
@@ -588,6 +607,11 @@ export default function Home() {
       const message=error instanceof Error?error.message:"Não foi possível concluir ou confirmar a limpeza.";
       setConfigMessage(`${message} Consulte os logs do worker e tente novamente.`);
     } finally { setCleaningBranches(false); }
+  }
+
+  async function loadCleanupHistory(applicationId:string) {
+    const response=await fetch(`/api/applications/${applicationId}/cleanup`,{cache:"no-store"});
+    if (response.ok) setCleanupHistory(await response.json());
   }
 
   async function saveSettings(e:FormEvent) {
@@ -655,10 +679,10 @@ export default function Home() {
           setConfigApp(a); setDeployWebhookUrl(""); setDeployVerificationUrl(""); setDeployTimeoutMinutes(a.deployTimeoutMinutes); setRemoveDeployWebhook(false);
           setInstallCommand(a.installCommand); setTestCommand(a.testCommand);
           setLintCommand(a.lintCommand); setBuildCommand(a.buildCommand);
-          setTestEnvironmentText(""); setConfigMessage("");
+          setTestEnvironmentText(""); setConfigMessage(""); setCleanupHistory([]); void loadCleanupHistory(a.id);
         }}>Configurar →</button></footer>
       </article>)}<button className="add" onClick={openImport}><b>＋</b><strong>Importar repositório</strong><small>Conectar outra aplicação do GitHub</small></button></div> :
-      <form className="settings-panel" onSubmit={saveSettings}><h2>Retenção dos chamados</h2><p>O prazo é contado desde a conclusão ou falha. O worker aplica a limpeza automaticamente.</p><div className="command-grid"><label>Arquivar depois de<input type="number" min={1} max={3650} value={archiveAfterDays} onChange={e=>setArchiveAfterDays(Number(e.target.value))} /><small>dias</small></label><label>Excluir definitivamente depois de<input type="number" min={2} max={3650} value={deleteAfterDays} onChange={e=>setDeleteAfterDays(Number(e.target.value))} /><small>dias</small></label></div><button className="primary" disabled={deleteAfterDays<=archiveAfterDays}>Salvar configurações</button></form>}
+      <form className="settings-panel" onSubmit={saveSettings}><h2>Retenção dos chamados</h2><p>Ao excluir o card, manual ou automaticamente, suas imagens também são excluídas do PostgreSQL.</p><div className="command-grid"><label>Arquivar depois de<input type="number" min={1} max={3650} value={archiveAfterDays} onChange={e=>setArchiveAfterDays(Number(e.target.value))} /><small>dias</small></label><label>Excluir definitivamente depois de<input type="number" min={2} max={3650} value={deleteAfterDays} onChange={e=>setDeleteAfterDays(Number(e.target.value))} /><small>dias</small></label></div><h2>Operação</h2><p>Fila: {agentHealth.metrics?.queued??0} · Executando: {agentHealth.metrics?.running??0} · Aprovações: {agentHealth.metrics?.waitingApproval??0} · Falhas em 24h: {agentHealth.metrics?.failed24h??0} · Deploys em curso: {agentHealth.metrics?.deployLocks??0}</p><button className="primary" disabled={deleteAfterDays<=archiveAfterDays}>Salvar configurações</button></form>}
     </section>
 
     {modal && <div className="overlay" onMouseDown={() => setModal(false)}><form className="modal" onSubmit={submit} onPaste={pasteImages} onMouseDown={e => e.stopPropagation()}>
@@ -712,6 +736,7 @@ export default function Home() {
       <label>URL HTTPS de verificação da versão<input type="url" value={deployVerificationUrl} onChange={e=>setDeployVerificationUrl(e.target.value)} placeholder={configApp.deployVerificationConfigured?"Já configurada — cole outra para substituir":"https://seu-app.com/api/version"} /><small>Deve retornar JSON com commit/sha ou o cabeçalho X-Commit-Sha. É usada para confirmar o deploy e liberar a fila.</small></label>
       <label>Tempo limite do deploy (minutos)<input type="number" min={1} max={120} value={deployTimeoutMinutes} onChange={e=>setDeployTimeoutMinutes(Number(e.target.value))} /></label>
       <section className="branch-cleanup"><div><strong>Limpeza de branches e clones</strong><small>Remove somente branches <code>lionworkforce/chamado-ID</code> de chamados encerrados e clones temporários residuais na VPS. Chamados ativos e a branch principal são preservados.</small></div><button type="button" className="danger" disabled={cleaningBranches} onClick={cleanupApplicationBranches}>{cleaningBranches?"Limpando...":"Limpar agora"}</button></section>
+      {cleanupHistory.length>0&&<details className="project-history"><summary>Histórico das últimas limpezas</summary><ol>{cleanupHistory.map(item=><li key={item.id}><strong>{item.status}</strong> · {item.removed_branches} branch(es), {item.removed_directories} clone(s) · {new Date(item.created_at).toLocaleString("pt-BR")}{item.error_message&&<small> — {item.error_message}</small>}</li>)}</ol></details>}
       <footer><button type="button" className="secondary" onClick={() => setConfigApp(null)}>Fechar</button>{configApp.deployConfigured && <button type="button" className="danger" onClick={() => setRemoveDeployWebhook(value=>!value)}>{removeDeployWebhook?"Manter webhook":"Remover webhook"}</button>}<button className="primary" disabled={configSaving}>{configSaving?"Salvando...":"Salvar"}</button></footer>
     </form></div>}
 

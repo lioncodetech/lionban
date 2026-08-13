@@ -5,19 +5,25 @@ export const dynamic = "force-dynamic";
 
 export async function GET() {
   try {
-    const [result,control] = await Promise.all([
+    const [result,control,metrics] = await Promise.all([
       query<{
         codex_authenticated:boolean; status_message:string|null; last_seen:string; worker_online:boolean;
       }>(`SELECT codex_authenticated,status_message,last_seen,
         last_seen > now() - interval '35 seconds' worker_online
         FROM lwf_worker_heartbeats ORDER BY last_seen DESC LIMIT 1`),
       query<{queue_paused:boolean;pause_reason:string|null}>("SELECT queue_paused,pause_reason FROM lwf_worker_control WHERE singleton=true"),
+      query<{queued:string;running:string;waiting_approval:string;failed_24h:string;deploy_locks:string}>(`SELECT
+        (SELECT count(*) FROM lwf_executions WHERE state='queued')::text queued,
+        (SELECT count(*) FROM lwf_executions WHERE state='running')::text running,
+        (SELECT count(*) FROM lwf_tickets WHERE status='approval' AND archived_at IS NULL)::text waiting_approval,
+        (SELECT count(*) FROM lwf_executions WHERE state='failed' AND finished_at>now()-interval '24 hours')::text failed_24h,
+        (SELECT count(*) FROM lwf_application_deploy_locks)::text deploy_locks`),
     ]);
     const worker=result.rows[0];
     const queuePaused=control.rows[0]?.queue_paused ?? false;
     if (!worker) return NextResponse.json({
       workerOnline:false,codexAuthenticated:false,queuePaused,lastSeen:null,
-      message:"Nenhum worker registrou atividade.",
+      message:"Nenhum worker registrou atividade.",metrics:{queued:0,running:0,waitingApproval:0,failed24h:0,deployLocks:0},
     });
     const message=queuePaused
       ? control.rows[0]?.pause_reason==="deploy"
@@ -31,11 +37,12 @@ export async function GET() {
     return NextResponse.json({
       workerOnline:worker.worker_online,codexAuthenticated:worker.codex_authenticated,
       queuePaused,lastSeen:worker.last_seen,message,
+      metrics:{queued:Number(metrics.rows[0]?.queued??0),running:Number(metrics.rows[0]?.running??0),waitingApproval:Number(metrics.rows[0]?.waiting_approval??0),failed24h:Number(metrics.rows[0]?.failed_24h??0),deployLocks:Number(metrics.rows[0]?.deploy_locks??0)},
     });
   } catch {
     return NextResponse.json({
       workerOnline:false,codexAuthenticated:false,queuePaused:false,lastSeen:null,
-      message:"Monitoramento ainda não foi instalado.",
+      message:"Monitoramento ainda não foi instalado.",metrics:{queued:0,running:0,waitingApproval:0,failed24h:0,deployLocks:0},
     });
   }
 }

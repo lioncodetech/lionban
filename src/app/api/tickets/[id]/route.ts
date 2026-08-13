@@ -103,12 +103,10 @@ export async function PATCH(request: Request, context: { params: Promise<{ id: s
   if (body.deployCompleted === true) {
     const result=await transaction(async client=>{
       const updated=await client.query(`UPDATE lwf_tickets SET deploy_status='completed',status=CASE WHEN ticket_kind='deploy' THEN 'completed'::lwf_ticket_status ELSE status END,deploy_updated_at=now(),updated_at=now()
-        WHERE id=$1 AND deploy_status='in_progress' RETURNING id`,[ticketId]);
+        WHERE id=$1 AND deploy_status='in_progress' RETURNING id,application_id`,[ticketId]);
       if (updated.rowCount) {
         await client.query("INSERT INTO lwf_events(ticket_id,kind,message) VALUES($1,'deploy.completed','Deploy confirmado como concluído pelo usuário')",[ticketId]);
-        await client.query(`UPDATE lwf_worker_control
-          SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
-          WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[ticketId]);
+        await client.query("DELETE FROM lwf_application_deploy_locks WHERE application_id=$1 AND ticket_id=$2",[updated.rows[0].application_id,ticketId]);
       }
       return updated.rowCount;
     });

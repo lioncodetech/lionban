@@ -24,7 +24,13 @@ export async function POST(_request:Request, context:{params:Promise<{id:string}
 export async function GET(request:Request, context:{params:Promise<{id:string}>}) {
   const {id}=await context.params;
   const requestId=new URL(request.url).searchParams.get("requestId") ?? "";
-  if (!validUuid(id) || !validUuid(requestId)) return NextResponse.json({error:"Solicitação inválida"},{status:400});
+  if (!validUuid(id)) return NextResponse.json({error:"Aplicação inválida"},{status:400});
+  if (!requestId) {
+    const history=await query(`SELECT id,status,removed_branches,removed_directories,error_message,created_at,started_at,finished_at
+      FROM lwf_cleanup_requests WHERE application_id=$1 ORDER BY created_at DESC LIMIT 10`,[id]);
+    return NextResponse.json(history.rows);
+  }
+  if (!validUuid(requestId)) return NextResponse.json({error:"Solicitação inválida"},{status:400});
   const result=await query(`SELECT id,status,removed_branches,removed_directories,error_message,created_at,finished_at
     FROM lwf_cleanup_requests WHERE id=$1 AND application_id=$2`,[requestId,id]);
   return result.rowCount?NextResponse.json(result.rows[0]):NextResponse.json({error:"Solicitação não encontrada"},{status:404});

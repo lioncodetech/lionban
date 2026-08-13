@@ -116,6 +116,11 @@ CREATE TABLE lb_worker_control (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 INSERT INTO lb_worker_control(singleton) VALUES(true);
+CREATE TABLE lb_application_deploy_locks (
+  application_id uuid PRIMARY KEY REFERENCES lb_applications(id) ON DELETE CASCADE,
+  ticket_id bigint NOT NULL REFERENCES lb_tickets(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
 CREATE TABLE lb_cleanup_requests (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   application_id uuid NOT NULL REFERENCES lb_applications(id) ON DELETE CASCADE,

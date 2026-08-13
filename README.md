@@ -28,7 +28,7 @@ Ao selecionar **Criar tag e ativar Action** em um chamado, o formulário consult
 
 O login exige `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH` e `AUTH_SECRET` com pelo menos 32 caracteres. Não existem credenciais padrão. Chamados concluídos, falhados ou cancelados são arquivados e removidos segundo os prazos de **Configurações** (7 e 15 dias por padrão). O worker executa essa manutenção ao iniciar e a cada hora.
 
-Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos processos daquele repositório. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis os segredos internos do LionWorkForce.
+Em **Aplicações → Configurar**, cada repositório pode receber comandos próprios e variáveis exclusivas de teste, como `DATABASE_URL` para uma base descartável. Os valores ficam ocultos depois de salvos e são entregues somente aos comandos de instalação, teste, lint e build daquele repositório; o subprocesso do Codex não recebe essas variáveis. Comandos aceitam argumentos entre aspas, mas operadores de shell como `&&`, `|`, `;` e redirecionamentos são recusados. Se existir `package-lock.json` e nenhum comando de instalação tiver sido informado, o worker executa `npm ci` automaticamente. Nunca use nessas variáveis os segredos internos do LionWorkForce.
 
 Cada aplicação também pode ter um **contexto permanente do projeto**, enviado em todos os chamados daquele repositório. Use esse campo para registrar arquitetura, regras de negócio, comandos de validação, componentes protegidos, padrões visuais, limitações e ambiente de execução. Depois que uma correção é realmente integrada à branch principal, o worker acrescenta ao histórico técnico da aplicação o chamado, o commit e os arquivos alterados. Execuções falhadas, patches isolados e mudanças ainda não integradas não entram nesse histórico.
 
@@ -38,7 +38,11 @@ O prompt reutilizável para preparar essa documentação está em [`docs/PROMPT_
 
 Ao criar, editar ou duplicar um chamado, é possível anexar até cinco imagens. Quando duas ou mais imagens são enviadas, os nomes recebem sufixos sequenciais antes da extensão (`imagem1.png`, `imagem2.png` e assim por diante); ao duplicar, esses sufixos são preservados sem repetição. O nome de uma imagem enviada sozinha é preservado. Clique na miniatura de uma imagem anexada para ampliá-la em um popup; o mesmo recurso está disponível na galeria do detalhe do chamado. Clique fora da imagem ou no botão de fechar para retornar.
 
+Os anexos continuam associados ao card no PostgreSQL. A exclusão manual do card e a exclusão automática pela política de retenção removem também todas as imagens por `ON DELETE CASCADE`.
+
 O Deployment Trigger do EasyPanel apenas confirma que a solicitação foi aceita. Por isso, o chamado mostra o deploy como em curso até o usuário confirmar, no histórico do EasyPanel, que ele terminou; falhas HTTP ao disparar o webhook são registradas automaticamente.
+
+Um deploy em curso bloqueia somente novos chamados da mesma aplicação. As filas dos outros repositórios continuam independentes. A tela de Configurações mostra contagens operacionais e cada aplicação mantém o histórico das últimas limpezas de branches e clones.
 
 Webhooks e URLs de verificação são validados ao salvar e antes do acesso. Endereços locais, redes privadas e credenciais embutidas são bloqueados. Em produção, use `DEPLOY_ALLOWED_HOSTS` com os hosts externos autorizados, separados por vírgula.
 

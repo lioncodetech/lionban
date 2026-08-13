@@ -6,6 +6,7 @@ import { db } from "../src/lib/db";
 import { defaultBranchContainsCommit, deleteRepositoryBranch, getDefaultBranchCommit, getPullRequestStatus, listLionWorkForceBranches, validateRepo } from "../src/lib/github";
 import { applicationContextSection, normalizeProjectContextDocument } from "./project-context";
 import { assertSafeOutboundUrl } from "../src/lib/outbound-url";
+import { commandParts } from "./command-parts";
 
 type Job = { execution_id:string; ticket_id:number; application_id:string; title:string; description:string; priority:"low"|"medium"|"high"|"critical"; ticket_kind:"fix"|"deploy"; ai_model?:string; full_name:string; github_repo_id:number; default_branch:string; clone_url:string; install_command?:string; test_command?:string; lint_command?:string; build_command?:string; test_environment:Record<string,string>; project_context:string; technical_history:string; auto_commit:boolean; auto_push:boolean; auto_pull_request:boolean; auto_deploy:boolean; deploy_webhook_url?:string; deploy_verification_url?:string; deploy_timeout_minutes:number; create_tag:boolean; release_tag?:string; resume_artifact_id?:string };
 const workerId = `worker-${process.pid}`;
@@ -63,10 +64,6 @@ function run(command:string, args:string[], cwd:string, env:Partial<NodeJS.Proce
     });
   });
 }
-function commandParts(command:string) {
-  const [bin,...args]=command.trim().split(/\s+/);
-  return {bin,args};
-}
 function codexExecArgs(prompt:string, model?:string) {
   return ["exec",...(model?["--model",model]:[]),"--sandbox",codexSandboxMode,"--skip-git-repo-check","--json",prompt];
 }
@@ -88,7 +85,7 @@ function runControlled(command:string,args:string[],cwd:string,job:Job,progressE
     const child=spawn(command,args,{
       // EasyPanel's container is the isolation boundary. Its nested Linux
       // sandbox cannot create namespaces. Never expose worker secrets here.
-      cwd,env:{...codexEnvironment(),...job.test_environment},
+      cwd,env:codexEnvironment(),
       shell:false,windowsHide:true,stdio:["ignore","pipe","pipe"],
     });
     let output=""; let stopping=false; let stdoutBuffer=""; let stderrBuffer=""; let latestActivity="Iniciando o Codex"; let lastActivityAt=Date.now(); let receivedStructuredEvent=false;
@@ -212,10 +209,8 @@ async function readDeployedCommit(url:string) {
 async function triggerDeploy(job:Job, expectedCommit:string) {
   if (!job.deploy_webhook_url) throw new Error("DEPLOY_WEBHOOK_NOT_CONFIGURED");
   await db.query("UPDATE lwf_tickets SET deploy_status='in_progress',deploy_expected_commit=$1,deploy_updated_at=now() WHERE id=$2",[expectedCommit,job.ticket_id]);
-  const pause=await db.query(`UPDATE lwf_worker_control
-    SET queue_paused=true,pause_reason='deploy',deploy_ticket_id=$1,updated_at=now()
-    WHERE singleton=true AND queue_paused=false RETURNING singleton`,[job.ticket_id]);
-  const ownsPause=Boolean(pause.rowCount);
+  await db.query(`INSERT INTO lwf_application_deploy_locks(application_id,ticket_id) VALUES($1,$2)
+    ON CONFLICT(application_id) DO UPDATE SET ticket_id=EXCLUDED.ticket_id,created_at=now()`,[job.application_id,job.ticket_id]);
   await event(job,"deploy.started","Deploy solicitado ao EasyPanel; aguardando confirmação de conclusão");
   try {
     const deployUrl=await assertSafeOutboundUrl(job.deploy_webhook_url,"deploy");
@@ -233,8 +228,7 @@ async function triggerDeploy(job:Job, expectedCommit:string) {
       if (deployed && (expectedCommit.startsWith(deployed) || deployed.startsWith(expectedCommit))) {
         await db.query("UPDATE lwf_tickets SET deploy_status='completed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
         await event(job,"deploy.completed","Nova versão confirmada no ambiente de produção",{commit:expectedCommit});
-        if (ownsPause) await db.query(`UPDATE lwf_worker_control SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
-          WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[job.ticket_id]);
+        await db.query("DELETE FROM lwf_application_deploy_locks WHERE application_id=$1 AND ticket_id=$2",[job.application_id,job.ticket_id]);
         return;
       }
       await wait(10_000);
@@ -243,10 +237,7 @@ async function triggerDeploy(job:Job, expectedCommit:string) {
   } catch(error) {
     const errorMessage=error instanceof Error?error.message:String(error);
     await db.query("UPDATE lwf_tickets SET deploy_status='failed',deploy_updated_at=now() WHERE id=$1",[job.ticket_id]);
-    if (ownsPause) {
-      await db.query(`UPDATE lwf_worker_control SET queue_paused=false,pause_reason=NULL,deploy_ticket_id=NULL,updated_at=now()
-        WHERE singleton=true AND pause_reason='deploy' AND deploy_ticket_id=$1`,[job.ticket_id]);
-    }
+    await db.query("DELETE FROM lwf_application_deploy_locks WHERE application_id=$1 AND ticket_id=$2",[job.application_id,job.ticket_id]);
     const publicMessage=errorMessage==="OUTBOUND_URL_NOT_ALLOWED"
       ?"O host do webhook ou da verificação não está autorizado em DEPLOY_ALLOWED_HOSTS no worker"
       :"Não foi possível confirmar a conclusão do deploy";
@@ -352,6 +343,7 @@ async function claim():Promise<Job|null> {
       t.auto_commit,t.auto_push,t.auto_pull_request,t.auto_deploy,a.deploy_webhook_url,a.deploy_verification_url,a.deploy_timeout_minutes,t.create_tag,t.release_tag,e.resume_artifact_id
       FROM lwf_executions e JOIN lwf_tickets t ON t.id=e.ticket_id JOIN lwf_applications a ON a.id=e.application_id
       WHERE e.state='queued' AND a.enabled=true AND (t.scheduled_at IS NULL OR t.scheduled_at<=now())
+        AND NOT EXISTS (SELECT 1 FROM lwf_application_deploy_locks deployment WHERE deployment.application_id=e.application_id)
         AND NOT EXISTS (
           SELECT 1 FROM lwf_executions active
           WHERE active.application_id=e.application_id AND active.state='running'
